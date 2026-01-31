@@ -40,6 +40,8 @@ flowchart LR
     App --> Notif
 ```
 
+<img src="ccnotify-finish.png" alt="タスク完了通知の例" width="600">
+
 <a name="features"></a>
 ## 主な機能
 
@@ -56,7 +58,7 @@ flowchart LR
 
 ### Windows 側（通知を受け取る側）
 
-[Releases](https://github.com/yourusername/claude-code-notify/releases) から最新版をダウンロード:
+[Releases](https://github.com/hexylab/claude-code-notify/releases) から最新版をダウンロード:
 
 - **インストーラー版**: `claude-code-notify_x.x.x_x64-setup.exe`
 - **ポータブル版**: `claude-code-notify.exe`
@@ -64,7 +66,7 @@ flowchart LR
 または、ソースからビルド:
 
 ```bash
-git clone https://github.com/yourusername/claude-code-notify.git
+git clone https://github.com/hexylab/claude-code-notify.git
 cd claude-code-notify
 npm install
 npm run tauri build
