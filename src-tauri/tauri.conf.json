@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Claude Code Notify",
   "version": "0.1.0",
-  "identifier": "com.hexyl.tauri-app",
+  "identifier": "com.hexyl.claude-code-notify",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,9 +10,14 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Claude Code Notify",
+        "width": 480,
+        "height": 560,
+        "visible": true,
+        "skipTaskbar": false,
+        "decorations": true,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {
@@ -28,6 +33,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "hexyl"
   }
 }

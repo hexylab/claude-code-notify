@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>設定エクスポート - Claude Code Notify</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+1+Code:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="export.css">
+    <script type="module" src="/export.js" defer></script>
+</head>
+<body>
+    <div class="pixel-grid"></div>
+
+    <main class="export-container">
+        <header class="export-header">
+            <div class="icon-wrapper">
+                <div class="pixel-icon">
+                    <span class="exclaim">!</span>
+                </div>
+            </div>
+            <h1>設定エクスポート</h1>
+            <p class="subtitle">Claude Code Notify</p>
+        </header>
+
+        <section class="config-section">
+            <div class="section-header">
+                <span class="pixel-marker"></span>
+                <h2>接続設定</h2>
+            </div>
+
+            <div class="form-group">
+                <label for="host">
+                    <span class="label-icon">▶</span>
+                    Windows PCのIPアドレス
+                </label>
+                <div class="input-with-button">
+                    <input type="text" id="host" placeholder="192.168.x.x">
+                    <button type="button" id="detect-ip" class="btn-secondary">
+                        <span class="btn-text">自動検出</span>
+                        <span class="btn-icon">⟳</span>
+                    </button>
+                </div>
+                <small class="hint">Claude Code側からアクセスできるIPアドレス</small>
+                <div id="ip-status" class="ip-status hidden"></div>
+            </div>
+
+            <div class="form-group">
+                <label for="client-type">
+                    <span class="label-icon">▶</span>
+                    MQTTクライアント
+                </label>
+                <div class="select-wrapper">
+                    <select id="client-type">
+                        <option value="mosquitto_pub" selected>mosquitto_pub (推奨)</option>
+                    </select>
+                    <span class="select-arrow">▼</span>
+                </div>
+            </div>
+        </section>
+
+        <div class="actions">
+            <button type="button" id="export-btn" class="btn-primary">
+                <span class="btn-content">
+                    <span class="export-icon">↓</span>
+                    ZIPとしてエクスポート
+                </span>
+            </button>
+        </div>
+
+        <div id="status" class="status hidden"></div>
+
+        <footer class="export-footer">
+            <div class="pixel-line"></div>
+            <div class="footer-nav">
+                <a href="index.html" class="back-link">← ダッシュボードに戻る</a>
+                <span class="footer-info">MQTT Port: 1883</span>
+            </div>
+        </footer>
+    </main>
+</body>
+</html>

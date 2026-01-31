@@ -1,10 +1,22 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window, export window, and tray",
+  "windows": ["main", "export"],
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    "core:tray:default",
+    "core:tray:allow-set-icon",
+    "core:tray:allow-set-menu",
+    "core:tray:allow-set-tooltip",
+    "notification:default",
+    "notification:allow-notify",
+    "notification:allow-request-permission",
+    "notification:allow-is-permission-granted",
+    "dialog:default",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:write-all"
   ]
 }

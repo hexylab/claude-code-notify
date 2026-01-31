@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="bell" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff"/>
+      <stop offset="100%" style="stop-color:#e0e7ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="url(#bg)"/>
+
+  <!-- Bell body -->
+  <path d="M128 45 C95 45 70 75 70 110 L70 145 L55 170 L55 180 L201 180 L201 170 L186 145 L186 110 C186 75 161 45 128 45 Z"
+        fill="url(#bell)" stroke="#4f46e5" stroke-width="4"/>
+
+  <!-- Bell clapper -->
+  <circle cx="128" cy="200" r="18" fill="#ffffff" stroke="#4f46e5" stroke-width="4"/>
+
+  <!-- Code bracket left < -->
+  <path d="M85 112 L65 128 L85 144"
+        fill="none" stroke="#4f46e5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Code bracket right > -->
+  <path d="M171 112 L191 128 L171 144"
+        fill="none" stroke="#4f46e5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Notification dot -->
+  <circle cx="185" cy="70" r="25" fill="#ef4444"/>
+  <circle cx="185" cy="70" r="18" fill="#fca5a5"/>
+</svg>

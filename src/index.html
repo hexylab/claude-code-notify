@@ -1,39 +1,85 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="stylesheet" href="styles.css" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Code Notify</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+1+Code:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="dashboard.css">
     <script type="module" src="/main.js" defer></script>
-  </head>
+</head>
+<body>
+    <div class="pixel-grid"></div>
 
-  <body>
-    <main class="container">
-      <h1>Welcome to Claude Code Notify</h1>
+    <main class="dashboard">
+        <header class="dashboard-header">
+            <div class="icon-wrapper">
+                <div class="pixel-icon">
+                    <span class="exclaim">!</span>
+                </div>
+            </div>
+            <h1>Claude Code Notify</h1>
+            <p class="version">v0.1.0</p>
+        </header>
 
-      <div class="row">
-        <a href="https://tauri.app" target="_blank">
-          <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-        </a>
-        <a
-          href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"
-          target="_blank"
-        >
-          <img
-            src="/assets/javascript.svg"
-            class="logo vanilla"
-            alt="JavaScript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+        <section class="status-card">
+            <div class="status-indicator" id="broker-status">
+                <span class="status-dot"></span>
+                <span class="status-text">接続確認中...</span>
+            </div>
+            <div class="status-detail">
+                <span class="label">MQTT Broker</span>
+                <span class="value">localhost:1883</span>
+            </div>
+        </section>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
+        <section class="quick-actions">
+            <button type="button" class="action-btn" id="open-export">
+                <span class="action-icon">↗</span>
+                <span class="action-text">設定エクスポート</span>
+            </button>
+        </section>
+
+        <section class="guide-section">
+            <div class="section-header">
+                <span class="pixel-marker"></span>
+                <h2>セットアップ</h2>
+            </div>
+            <ol class="setup-steps">
+                <li class="step" style="animation-delay: 0.1s">
+                    <span class="step-num">1</span>
+                    <div class="step-content">
+                        <span class="step-title">設定をエクスポート</span>
+                        <span class="step-desc">上のボタンからZIPファイルを保存</span>
+                    </div>
+                </li>
+                <li class="step" style="animation-delay: 0.2s">
+                    <span class="step-num">2</span>
+                    <div class="step-content">
+                        <span class="step-title">WSL/Linuxで実行</span>
+                        <span class="step-desc">install.shでClaude Codeに連携</span>
+                    </div>
+                </li>
+                <li class="step" style="animation-delay: 0.3s">
+                    <span class="step-num">3</span>
+                    <div class="step-content">
+                        <span class="step-title">通知を受け取る</span>
+                        <span class="step-desc">タスク完了時にデスクトップ通知</span>
+                    </div>
+                </li>
+            </ol>
+        </section>
+
+        <footer class="dashboard-footer">
+            <div class="pixel-line"></div>
+            <div class="footer-actions">
+                <button type="button" class="footer-btn" id="minimize-btn">
+                    トレイに格納
+                </button>
+            </div>
+        </footer>
     </main>
-  </body>
+</body>
 </html>

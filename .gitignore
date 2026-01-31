@@ -28,3 +28,9 @@ src-tauri/target/
 
 # Claude
 .claude/
+
+# Development docs (internal)
+docs/
+
+# Session files
+SESSION_HANDOFF.md
