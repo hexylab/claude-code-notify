@@ -2,92 +2,13 @@
 //!
 //! Contains script templates for Claude Code hooks integration.
 
-/// Session name management function (shared across all hook scripts)
-/// This function assigns human-readable names to Claude Code sessions
-/// based on PPID (parent process ID) for identification.
-pub const SESSION_NAME_FUNCTION: &str = r#"
-# Session name management
-SESSION_FILE="/tmp/claude-notify-sessions.json"
-STALE_THRESHOLD=1800  # 30 minutes in seconds
-
-# Human names for session identification (50 names)
-SESSION_NAMES=(
-    "Alice" "Bob" "Charlie" "Diana" "Edward"
-    "Fiona" "George" "Hannah" "Ivan" "Julia"
-    "Kevin" "Luna" "Marcus" "Nancy" "Oscar"
-    "Paula" "Quinn" "Rachel" "Steven" "Teresa"
-    "Uma" "Victor" "Wendy" "Xavier" "Yuki"
-    "Zara" "Alex" "Blake" "Casey" "Drew"
-    "Ellis" "Finley" "Gray" "Harper" "Indigo"
-    "Jordan" "Kendall" "Logan" "Morgan" "Nico"
-    "Parker" "Reagan" "Sage" "Taylor" "Unity"
-    "Vale" "Winter" "Xen" "Yael" "Zion"
-)
-
-get_session_name() {
-    local ppid="$PPID"
-    local now=$(date +%s)
-
-    # Initialize session file if missing or invalid
-    if [ ! -f "$SESSION_FILE" ] || ! jq -e . "$SESSION_FILE" >/dev/null 2>&1; then
-        echo '{"sessions":{}}' > "$SESSION_FILE"
-    fi
-
-    # Use file locking to prevent race conditions
-    (
-        flock -x 200
-
-        local sessions=$(cat "$SESSION_FILE")
-
-        # Check if PPID already has a name
-        local existing_name=$(echo "$sessions" | jq -r --arg ppid "$ppid" '.sessions[$ppid].name // empty')
-
-        if [ -n "$existing_name" ]; then
-            # Update last_seen and return existing name
-            echo "$sessions" | jq --arg ppid "$ppid" --argjson now "$now" \
-                '.sessions[$ppid].last_seen = $now' > "$SESSION_FILE"
-            echo "$existing_name"
-            return
-        fi
-
-        # Get list of currently used names
-        local used_names=$(echo "$sessions" | jq -r '.sessions[].name')
-
-        # Find an unused name
-        local new_name=""
-        for name in "${SESSION_NAMES[@]}"; do
-            if ! echo "$used_names" | grep -qx "$name"; then
-                new_name="$name"
-                break
-            fi
-        done
-
-        # If all names are used, recycle from oldest stale session
-        if [ -z "$new_name" ]; then
-            local stale_cutoff=$((now - STALE_THRESHOLD))
-            local oldest=$(echo "$sessions" | jq -r --argjson cutoff "$stale_cutoff" '
-                .sessions | to_entries
-                | map(select(.value.last_seen < $cutoff))
-                | sort_by(.value.last_seen)
-                | first
-                | .key // empty
-            ')
-
-            if [ -n "$oldest" ]; then
-                new_name=$(echo "$sessions" | jq -r --arg ppid "$oldest" '.sessions[$ppid].name')
-                sessions=$(echo "$sessions" | jq --arg ppid "$oldest" 'del(.sessions[$ppid])')
-            else
-                # All sessions are active - use fallback with short hash
-                new_name="Session-${ppid: -4}"
-            fi
-        fi
-
-        # Register new session
-        echo "$sessions" | jq --arg ppid "$ppid" --arg name "$new_name" --argjson now "$now" \
-            '.sessions[$ppid] = {"name": $name, "last_seen": $now}' > "$SESSION_FILE"
-
-        echo "$new_name"
-    ) 200>"$SESSION_FILE.lock"
+/// Session ID generation function (shared across all hook scripts)
+/// Generates a unique session identifier using hostname and PPID.
+/// The receiving app (Windows) will map this ID to a human-readable name.
+pub const SESSION_ID_FUNCTION: &str = r#"
+# Generate unique session ID (hostname-ppid)
+get_session_id() {
+    echo "$(hostname)-${PPID}"
 }
 "#;
 
@@ -103,17 +24,17 @@ TOPIC="claude-code/events/stop"
 # Get current working directory
 CWD="${PWD}"
 
-__SESSION_NAME_FUNCTION__
+__SESSION_ID_FUNCTION__
 
-# Get session name for this Claude Code instance
-SESSION_NAME=$(get_session_name)
+# Get session ID for this Claude Code instance
+SESSION_ID=$(get_session_id)
 
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
 {
   "event": "stop",
   "cwd": "${CWD}",
-  "session_name": "${SESSION_NAME}",
+  "session_id": "${SESSION_ID}",
   "timestamp": "$(date -Iseconds)"
 }
 EOF
@@ -139,17 +60,17 @@ CWD="${PWD}"
 # Read the permission request content from stdin
 REQUEST_CONTENT=$(cat)
 
-__SESSION_NAME_FUNCTION__
+__SESSION_ID_FUNCTION__
 
-# Get session name for this Claude Code instance
-SESSION_NAME=$(get_session_name)
+# Get session ID for this Claude Code instance
+SESSION_ID=$(get_session_id)
 
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
 {
   "event": "permission-request",
   "cwd": "${CWD}",
-  "session_name": "${SESSION_NAME}",
+  "session_id": "${SESSION_ID}",
   "content": ${REQUEST_CONTENT},
   "timestamp": "$(date -Iseconds)"
 }
@@ -176,17 +97,17 @@ CWD="${PWD}"
 # Read the notification content from stdin
 NOTIFICATION_CONTENT=$(cat)
 
-__SESSION_NAME_FUNCTION__
+__SESSION_ID_FUNCTION__
 
-# Get session name for this Claude Code instance
-SESSION_NAME=$(get_session_name)
+# Get session ID for this Claude Code instance
+SESSION_ID=$(get_session_id)
 
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
 {
   "event": "notification",
   "cwd": "${CWD}",
-  "session_name": "${SESSION_NAME}",
+  "session_id": "${SESSION_ID}",
   "content": ${NOTIFICATION_CONTENT},
   "timestamp": "$(date -Iseconds)"
 }
@@ -644,106 +565,13 @@ MQTT ポート: __PORT__
 // Windows (PowerShell) Templates
 // =============================================================================
 
-/// Session name management function for PowerShell
-pub const SESSION_NAME_FUNCTION_PS1: &str = r#"
-# Session name management (PowerShell version)
-$SessionFile = "$env:TEMP\claude-notify-sessions.json"
-$StaleThreshold = 1800  # 30 minutes in seconds
-
-$SessionNames = @(
-    "Alice", "Bob", "Charlie", "Diana", "Edward",
-    "Fiona", "George", "Hannah", "Ivan", "Julia",
-    "Kevin", "Luna", "Marcus", "Nancy", "Oscar",
-    "Paula", "Quinn", "Rachel", "Steven", "Teresa",
-    "Uma", "Victor", "Wendy", "Xavier", "Yuki",
-    "Zara", "Alex", "Blake", "Casey", "Drew",
-    "Ellis", "Finley", "Gray", "Harper", "Indigo",
-    "Jordan", "Kendall", "Logan", "Morgan", "Nico",
-    "Parker", "Reagan", "Sage", "Taylor", "Unity",
-    "Vale", "Winter", "Xen", "Yael", "Zion"
-)
-
-function Get-SessionName {
-    $ppid = $PID
-    $now = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
-
-    # Initialize session file if missing or invalid
-    if (-not (Test-Path $SessionFile)) {
-        @{ sessions = @{} } | ConvertTo-Json | Set-Content $SessionFile -Encoding UTF8
-    }
-
-    try {
-        $sessionsRaw = Get-Content $SessionFile -Raw -ErrorAction Stop
-        $sessions = $sessionsRaw | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        $sessions = [PSCustomObject]@{ sessions = @{} }
-    }
-
-    # Convert to hashtable for easier manipulation
-    $sessionsHash = @{}
-    if ($sessions.sessions -and $sessions.sessions.PSObject.Properties) {
-        $sessions.sessions.PSObject.Properties | ForEach-Object {
-            $sessionsHash[$_.Name] = $_.Value
-        }
-    }
-
-    # Check if PID already has a name
-    $ppidStr = $ppid.ToString()
-    if ($sessionsHash.ContainsKey($ppidStr)) {
-        $entry = $sessionsHash[$ppidStr]
-        $sessionsHash[$ppidStr] = @{
-            name = $entry.name
-            last_seen = $now
-        }
-        @{ sessions = $sessionsHash } | ConvertTo-Json -Depth 10 | Set-Content $SessionFile -Encoding UTF8
-        return $entry.name
-    }
-
-    # Get list of currently used names
-    $usedNames = @()
-    $sessionsHash.Values | ForEach-Object { $usedNames += $_.name }
-
-    # Find an unused name
-    $newName = $null
-    foreach ($name in $SessionNames) {
-        if ($name -notin $usedNames) {
-            $newName = $name
-            break
-        }
-    }
-
-    # If all names are used, recycle from oldest stale session or use fallback
-    if (-not $newName) {
-        $staleCutoff = $now - $StaleThreshold
-        $oldest = $null
-        $oldestTime = [long]::MaxValue
-
-        foreach ($key in $sessionsHash.Keys) {
-            $entry = $sessionsHash[$key]
-            if ($entry.last_seen -lt $staleCutoff -and $entry.last_seen -lt $oldestTime) {
-                $oldest = $key
-                $oldestTime = $entry.last_seen
-            }
-        }
-
-        if ($oldest) {
-            $newName = $sessionsHash[$oldest].name
-            $sessionsHash.Remove($oldest)
-        } else {
-            $suffix = $ppidStr
-            if ($suffix.Length -gt 4) { $suffix = $suffix.Substring($suffix.Length - 4) }
-            $newName = "Session-$suffix"
-        }
-    }
-
-    # Register new session
-    $sessionsHash[$ppidStr] = @{
-        name = $newName
-        last_seen = $now
-    }
-
-    @{ sessions = $sessionsHash } | ConvertTo-Json -Depth 10 | Set-Content $SessionFile -Encoding UTF8
-    return $newName
+/// Session ID generation function for PowerShell
+/// Generates a unique session identifier using hostname and PID.
+/// The receiving app (Windows) will map this ID to a human-readable name.
+pub const SESSION_ID_FUNCTION_PS1: &str = r#"
+# Generate unique session ID (hostname-pid)
+function Get-SessionId {
+    return "$env:COMPUTERNAME-$PID"
 }
 "#;
 
@@ -765,16 +593,16 @@ $NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "_
 $Topic = "claude-code/events/stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-__SESSION_NAME_FUNCTION__
+__SESSION_ID_FUNCTION__
 
-$SessionName = Get-SessionName
+$SessionId = Get-SessionId
 $Cwd = (Get-Location).Path
 $Timestamp = Get-Date -Format "o"
 
 $PayloadObj = @{
     event = "stop"
     cwd = $Cwd
-    session_name = $SessionName
+    session_id = $SessionId
     timestamp = $Timestamp
 }
 $Payload = $PayloadObj | ConvertTo-Json -Compress
@@ -806,9 +634,9 @@ $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [Sys
 $RequestContent = $reader.ReadToEnd()
 $reader.Close()
 
-__SESSION_NAME_FUNCTION__
+__SESSION_ID_FUNCTION__
 
-$SessionName = Get-SessionName
+$SessionId = Get-SessionId
 $Cwd = (Get-Location).Path
 $Timestamp = Get-Date -Format "o"
 
@@ -822,7 +650,7 @@ try {
 $PayloadObj = @{
     event = "permission-request"
     cwd = $Cwd
-    session_name = $SessionName
+    session_id = $SessionId
     content = $ContentObj
     timestamp = $Timestamp
 }
@@ -855,9 +683,9 @@ $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [Sys
 $NotificationContent = $reader.ReadToEnd()
 $reader.Close()
 
-__SESSION_NAME_FUNCTION__
+__SESSION_ID_FUNCTION__
 
-$SessionName = Get-SessionName
+$SessionId = Get-SessionId
 $Cwd = (Get-Location).Path
 $Timestamp = Get-Date -Format "o"
 
@@ -871,7 +699,7 @@ try {
 $PayloadObj = @{
     event = "notification"
     cwd = $Cwd
-    session_name = $SessionName
+    session_id = $SessionId
     content = $ContentObj
     timestamp = $Timestamp
 }

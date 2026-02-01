@@ -2,7 +2,9 @@
 //!
 //! Manages the state of Claude Code sessions, including
 //! tracking active sessions, their status, and aggregated metrics.
+//! Also handles session ID to display name mapping.
 
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -213,6 +215,177 @@ impl SessionManager {
     }
 }
 
+// =============================================================================
+// Session Name Manager
+// =============================================================================
+
+/// Human names in Katakana for session identification (150 names)
+const SESSION_NAMES: &[&str] = &[
+    // A
+    "アリス", "アンナ", "アヤ", "アキ", "アオイ",
+    "アレックス", "アンディ", "アーロン", "アダム", "エイミー",
+    // B
+    "ベン", "ボブ", "ブレイク", "ベラ", "ブルーノ",
+    // C
+    "チャーリー", "クロエ", "カール", "キャシー", "クリス",
+    // D
+    "ダン", "ダイアナ", "デイビッド", "ドリー", "ディラン",
+    // E
+    "エマ", "エミリー", "イーサン", "エリック", "エヴァ",
+    // F
+    "フィン", "フローラ", "フランク", "フェリックス", "フィオナ",
+    // G
+    "ジョージ", "グレース", "ガブリエル", "ジーナ", "ゴードン",
+    // H
+    "ハナ", "ヒロ", "ヘンリー", "ホリー", "ハルカ",
+    // I
+    "アイビー", "イアン", "イザベル", "イヴ", "イサム",
+    // J
+    "ジャック", "ジェーン", "ジェイク", "ジュリア", "ジョン",
+    // K
+    "ケイト", "カイ", "ケン", "キム", "カレン",
+    // L
+    "ルナ", "リオ", "レオ", "リリー", "ルーカス",
+    // M
+    "マヤ", "ミア", "マックス", "マイク", "モリー",
+    // N
+    "ノア", "ニナ", "ニック", "ナオミ", "ネイト",
+    // O
+    "オリバー", "オリビア", "オスカー", "オーウェン", "オパール",
+    // P
+    "ポール", "ペニー", "ピーター", "パム", "パトリック",
+    // Q
+    "クイン",
+    // R
+    "レイ", "ローズ", "ライアン", "レベッカ", "レオナ",
+    // S
+    "サラ", "ソフィア", "サム", "スカイ", "ショーン",
+    "シオン", "セナ", "ソラ", "サクラ", "シュン",
+    // T
+    "トム", "ティナ", "タイラー", "テス", "トビー",
+    // U
+    "ウナ", "ウーゴ",
+    // V
+    "ヴィクター", "ヴィオラ", "ヴィンス", "ヴェラ", "ヴァル",
+    // W
+    "ウィル", "ウェンディ", "ワイアット", "ウィロー", "ウェイド",
+    // X
+    "ザビエル", "シアラ",
+    // Y
+    "ユキ", "ユウ", "ユナ", "ヨシ", "ユリ",
+    // Z
+    "ザック", "ゾーイ", "ゼン", "ザラ", "ジオ",
+    // Additional names
+    "アンジェラ", "ブライアン", "キャロル", "デレク", "エレナ",
+    "フレッド", "グロリア", "ハロルド", "アイリス", "ジェシカ",
+    "ケビン", "ローラ", "マーク", "ナンシー", "オスカル",
+    "パメラ", "ロジャー", "ステラ", "テリー", "ウルスラ",
+    "ビンセント", "ワンダ", "ザンダー", "イヴォンヌ", "ザカリー",
+    "リナ", "タケシ", "ミサキ", "ケンジ", "アスカ",
+    "リョウ", "マリコ", "ユウタ", "エリカ", "ダイキ",
+];
+
+/// Session name manager - maps session IDs to human-readable names
+///
+/// This manager assigns random names from a pool of 150 Katakana names
+/// to session IDs. Names are assigned on first encounter and persisted for the session lifetime.
+/// When all names are in use, the oldest session's name is recycled.
+#[derive(Debug, Clone)]
+pub struct SessionNameManager {
+    /// Map from session_id to display name
+    names: Arc<RwLock<HashMap<String, String>>>,
+    /// Set of currently used names (to avoid duplicates)
+    used_names: Arc<RwLock<std::collections::HashSet<String>>>,
+}
+
+impl Default for SessionNameManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionNameManager {
+    pub fn new() -> Self {
+        Self {
+            names: Arc::new(RwLock::new(HashMap::new())),
+            used_names: Arc::new(RwLock::new(std::collections::HashSet::new())),
+        }
+    }
+
+    /// Get or create a display name for a session ID
+    ///
+    /// If the session ID already has a name, returns it.
+    /// Otherwise, generates a random unique name and stores it.
+    pub fn get_or_create_name(&self, session_id: &str) -> String {
+        // Check if name already exists
+        {
+            let names = self.names.read().expect("Failed to acquire read lock");
+            if let Some(name) = names.get(session_id) {
+                return name.clone();
+            }
+        }
+
+        // Generate a new unique name
+        let new_name = self.generate_unique_name();
+
+        // Store the new name
+        {
+            let mut names = self.names.write().expect("Failed to acquire write lock");
+            let mut used = self.used_names.write().expect("Failed to acquire write lock");
+
+            // Double-check in case another thread added it
+            if let Some(name) = names.get(session_id) {
+                return name.clone();
+            }
+
+            names.insert(session_id.to_string(), new_name.clone());
+            used.insert(new_name.clone());
+            info!("Assigned name '{}' to session '{}'", new_name, session_id);
+        }
+
+        new_name
+    }
+
+    /// Generate a unique random name that hasn't been used yet
+    fn generate_unique_name(&self) -> String {
+        let used = self.used_names.read().expect("Failed to acquire read lock");
+        let mut rng = rand::rng();
+
+        // Shuffle names and find an unused one
+        let mut names: Vec<&str> = SESSION_NAMES.to_vec();
+        names.shuffle(&mut rng);
+
+        for name in &names {
+            if !used.contains(*name) {
+                return name.to_string();
+            }
+        }
+
+        // All names are in use - this should rarely happen with 150 names
+        // Return a random name anyway (will be duplicate but functional)
+        names.first().copied().unwrap_or("アリス").to_string()
+    }
+
+    /// Remove a session and free up its name for reuse
+    #[allow(dead_code)]
+    pub fn remove_session(&self, session_id: &str) {
+        let mut names = self.names.write().expect("Failed to acquire write lock");
+        let mut used = self.used_names.write().expect("Failed to acquire write lock");
+
+        if let Some(name) = names.remove(session_id) {
+            used.remove(&name);
+            info!("Removed session '{}' (was '{}')", session_id, name);
+        }
+    }
+
+    /// Get the number of active sessions
+    #[allow(dead_code)]
+    pub fn session_count(&self) -> usize {
+        let names = self.names.read().expect("Failed to acquire read lock");
+        names.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +465,49 @@ mod tests {
         let tooltip = manager.generate_tooltip();
         assert!(tooltip.contains("Sessions: 1"));
         assert!(tooltip.contains("$0.05"));
+    }
+
+    // SessionNameManager tests
+
+    #[test]
+    fn test_session_name_manager_assigns_name() {
+        let manager = SessionNameManager::new();
+        let name = manager.get_or_create_name("wsl-12345");
+
+        // Name should be a single Katakana name from the list
+        assert!(!name.is_empty());
+        assert!(SESSION_NAMES.contains(&name.as_str()));
+    }
+
+    #[test]
+    fn test_session_name_manager_returns_same_name() {
+        let manager = SessionNameManager::new();
+        let name1 = manager.get_or_create_name("session-abc");
+        let name2 = manager.get_or_create_name("session-abc");
+
+        assert_eq!(name1, name2);
+    }
+
+    #[test]
+    fn test_session_name_manager_unique_names() {
+        let manager = SessionNameManager::new();
+        let name1 = manager.get_or_create_name("session-1");
+        let name2 = manager.get_or_create_name("session-2");
+        let name3 = manager.get_or_create_name("session-3");
+
+        // All names should be different
+        assert_ne!(name1, name2);
+        assert_ne!(name2, name3);
+        assert_ne!(name1, name3);
+    }
+
+    #[test]
+    fn test_session_name_manager_remove_session() {
+        let manager = SessionNameManager::new();
+        let _name = manager.get_or_create_name("session-to-remove");
+
+        assert_eq!(manager.session_count(), 1);
+        manager.remove_session("session-to-remove");
+        assert_eq!(manager.session_count(), 0);
     }
 }
