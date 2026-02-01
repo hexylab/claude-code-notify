@@ -1,13 +1,28 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
+const { getVersion } = window.__TAURI__.app;
 
 document.addEventListener('DOMContentLoaded', () => {
     const brokerStatus = document.getElementById('broker-status');
     const openExportBtn = document.getElementById('open-export');
     const minimizeBtn = document.getElementById('minimize-btn');
+    const appVersion = document.getElementById('app-version');
+
+    // Display app version
+    displayVersion();
 
     // Check broker status on load
     checkBrokerStatus();
+
+    async function displayVersion() {
+        try {
+            const version = await getVersion();
+            appVersion.textContent = `v${version}`;
+        } catch (error) {
+            console.error('Failed to get version:', error);
+            appVersion.textContent = 'v?.?.?';
+        }
+    }
 
     // Periodically check broker status
     setInterval(checkBrokerStatus, 5000);
