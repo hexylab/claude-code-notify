@@ -29,8 +29,8 @@
     --info-bg: #EBF8FF;
 
     /* Typography */
-    --font-pixel: 'Press Start 2P', cursive;
-    --font-main: 'M PLUS 1 Code', monospace;
+    --font-pixel: 'DotGothic16', 'Press Start 2P', cursive;
+    --font-main: 'M PLUS Rounded 1c', sans-serif;
 
     /* Spacing */
     --pixel-unit: 4px;
@@ -321,9 +321,8 @@ input[type="text"]::placeholder {
     align-items: center;
     gap: 6px;
     padding: 12px 16px;
-    font-family: var(--font-main);
-    font-size: 12px;
-    font-weight: 600;
+    font-family: var(--font-pixel);
+    font-size: 9px;
     color: var(--navy);
     background-color: var(--cream);
     border: 2px solid var(--navy);

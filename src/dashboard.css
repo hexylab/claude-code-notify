@@ -29,8 +29,8 @@
     --info-bg: #EBF8FF;
 
     /* Typography */
-    --font-pixel: 'Press Start 2P', cursive;
-    --font-main: 'M PLUS 1 Code', monospace;
+    --font-pixel: 'DotGothic16', 'Press Start 2P', cursive;
+    --font-main: 'M PLUS Rounded 1c', sans-serif;
 
     /* Spacing */
     --pixel-unit: 4px;
@@ -380,9 +380,8 @@ body {
 
 .footer-btn {
     padding: 10px 20px;
-    font-family: var(--font-main);
-    font-size: 11px;
-    font-weight: 600;
+    font-family: var(--font-pixel);
+    font-size: 10px;
     color: var(--navy);
     background-color: transparent;
     border: 2px solid var(--navy);
