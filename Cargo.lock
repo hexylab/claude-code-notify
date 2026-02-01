@@ -720,6 +720,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "local-ip-address",
+ "rand 0.9.2",
  "rumqttc",
  "rumqttd",
  "serde",

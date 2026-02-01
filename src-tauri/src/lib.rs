@@ -13,7 +13,7 @@ mod tray;
 use broker::MqttBroker;
 use client::{topics, MqttMessage};
 use serde::{Deserialize, Serialize};
-use state::{SessionManager, StatusPayload};
+use state::{SessionManager, SessionNameManager, StatusPayload};
 use std::sync::Arc;
 use tauri_plugin_notification::NotificationExt;
 use tracing::{error, info, warn};
@@ -25,7 +25,10 @@ struct StopEventPayload {
     #[allow(dead_code)]
     event: String,
     cwd: String,
-    /// Human-readable session name (e.g., "Alice", "Bob")
+    /// Session identifier (hostname-ppid format)
+    session_id: Option<String>,
+    /// Legacy: Human-readable session name (deprecated, use session_id instead)
+    #[allow(dead_code)]
     session_name: Option<String>,
     #[allow(dead_code)]
     timestamp: Option<String>,
@@ -37,7 +40,10 @@ struct PermissionRequestPayload {
     #[allow(dead_code)]
     event: String,
     cwd: String,
-    /// Human-readable session name (e.g., "Alice", "Bob")
+    /// Session identifier (hostname-ppid format)
+    session_id: Option<String>,
+    /// Legacy: Human-readable session name (deprecated, use session_id instead)
+    #[allow(dead_code)]
     session_name: Option<String>,
     content: PermissionRequestContent,
     #[allow(dead_code)]
@@ -59,7 +65,10 @@ struct NotificationEventPayload {
     #[allow(dead_code)]
     event: String,
     cwd: String,
-    /// Human-readable session name (e.g., "Alice", "Bob")
+    /// Session identifier (hostname-ppid format)
+    session_id: Option<String>,
+    /// Legacy: Human-readable session name (deprecated, use session_id instead)
+    #[allow(dead_code)]
     session_name: Option<String>,
     content: NotificationContent,
     #[allow(dead_code)]
@@ -92,6 +101,7 @@ fn init_logging() {
 pub struct AppState {
     pub broker: Option<MqttBroker>,
     pub session_manager: Arc<SessionManager>,
+    pub session_name_manager: Arc<SessionNameManager>,
 }
 
 #[tauri::command]
@@ -155,7 +165,11 @@ fn generate_config_zip_v2(options: ExportOptions) -> Result<Vec<u8>, String> {
     .map_err(|e| e.to_string())
 }
 
-fn start_message_handler(app_handle: tauri::AppHandle, session_manager: Arc<SessionManager>) {
+fn start_message_handler(
+    app_handle: tauri::AppHandle,
+    session_manager: Arc<SessionManager>,
+    session_name_manager: Arc<SessionNameManager>,
+) {
     // Wait for broker to start
     std::thread::sleep(std::time::Duration::from_secs(1));
 
@@ -171,7 +185,7 @@ fn start_message_handler(app_handle: tauri::AppHandle, session_manager: Arc<Sess
 
         rt.block_on(async move {
             while let Some(msg) = rx.recv().await {
-                handle_mqtt_message(&app_handle, &session_manager, msg);
+                handle_mqtt_message(&app_handle, &session_manager, &session_name_manager, msg);
             }
             warn!("MQTT message receiver closed");
         });
@@ -181,6 +195,7 @@ fn start_message_handler(app_handle: tauri::AppHandle, session_manager: Arc<Sess
 fn handle_mqtt_message(
     app: &tauri::AppHandle,
     session_manager: &Arc<SessionManager>,
+    session_name_manager: &Arc<SessionNameManager>,
     msg: MqttMessage,
 ) {
     info!("Received MQTT message on topic: {}", msg.topic);
@@ -191,7 +206,7 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<StopEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Stop event received for: {}", payload.cwd);
-                        show_stop_notification(app, &payload);
+                        show_stop_notification(app, session_name_manager, &payload);
                     }
                     Err(e) => {
                         warn!("Failed to parse stop event payload: {}", e);
@@ -206,7 +221,7 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<PermissionRequestPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Permission request received for: {}", payload.cwd);
-                        show_permission_request_notification(app, &payload);
+                        show_permission_request_notification(app, session_name_manager, &payload);
                     }
                     Err(e) => {
                         warn!("Failed to parse permission request payload: {}", e);
@@ -220,7 +235,7 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<NotificationEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Notification event received for: {}", payload.cwd);
-                        show_notification_event(app, &payload);
+                        show_notification_event(app, session_name_manager, &payload);
                     }
                     Err(e) => {
                         warn!("Failed to parse notification event payload: {}", e);
@@ -279,12 +294,24 @@ fn extract_project_name(cwd: &str) -> &str {
         .unwrap_or(cwd)
 }
 
+/// Resolve session name from session_id using SessionNameManager
+fn resolve_session_name(session_name_manager: &SessionNameManager, session_id: Option<&str>) -> Option<String> {
+    session_id.map(|id| session_name_manager.get_or_create_name(id))
+}
+
 /// Show notification for stop event
-fn show_stop_notification(app: &tauri::AppHandle, payload: &StopEventPayload) {
+fn show_stop_notification(
+    app: &tauri::AppHandle,
+    session_name_manager: &SessionNameManager,
+    payload: &StopEventPayload,
+) {
     let project = extract_project_name(&payload.cwd);
 
+    // Resolve session name from session_id
+    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
+
     // Format title with optional session name
-    let title = match &payload.session_name {
+    let title = match session_name {
         Some(name) => format!("✅ タスク完了 - {} [{}]", project, name),
         None => format!("✅ タスク完了 - {}", project),
     };
@@ -303,8 +330,15 @@ fn show_stop_notification(app: &tauri::AppHandle, payload: &StopEventPayload) {
 }
 
 /// Show notification for permission request (approval needed) or AskUserQuestion
-fn show_permission_request_notification(app: &tauri::AppHandle, payload: &PermissionRequestPayload) {
+fn show_permission_request_notification(
+    app: &tauri::AppHandle,
+    session_name_manager: &SessionNameManager,
+    payload: &PermissionRequestPayload,
+) {
     let project = extract_project_name(&payload.cwd);
+
+    // Resolve session name from session_id
+    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
 
     // Check if this is an AskUserQuestion (question from Claude, not a permission request)
     let is_ask_user_question = payload.content.tool_name.as_deref() == Some("AskUserQuestion")
@@ -317,17 +351,22 @@ fn show_permission_request_notification(app: &tauri::AppHandle, payload: &Permis
 
     if is_ask_user_question {
         // Show as a question notification
-        show_ask_user_question_notification(app, payload, project);
+        show_ask_user_question_notification(app, payload, project, session_name.as_deref());
     } else {
         // Show as a permission request notification
-        show_tool_permission_notification(app, payload, project);
+        show_tool_permission_notification(app, payload, project, session_name.as_deref());
     }
 }
 
 /// Show notification for AskUserQuestion (Claude is asking a question)
-fn show_ask_user_question_notification(app: &tauri::AppHandle, payload: &PermissionRequestPayload, project: &str) {
+fn show_ask_user_question_notification(
+    app: &tauri::AppHandle,
+    payload: &PermissionRequestPayload,
+    project: &str,
+    session_name: Option<&str>,
+) {
     // Format title with optional session name
-    let title = match &payload.session_name {
+    let title = match session_name {
         Some(name) => format!("❓ 質問 - {} [{}]", project, name),
         None => format!("❓ 質問 - {}", project),
     };
@@ -382,9 +421,14 @@ fn extract_question_text(content: &PermissionRequestContent) -> Option<String> {
 }
 
 /// Show notification for tool permission request (approval needed)
-fn show_tool_permission_notification(app: &tauri::AppHandle, payload: &PermissionRequestPayload, project: &str) {
+fn show_tool_permission_notification(
+    app: &tauri::AppHandle,
+    payload: &PermissionRequestPayload,
+    project: &str,
+    session_name: Option<&str>,
+) {
     // Format title with optional session name
-    let title = match &payload.session_name {
+    let title = match session_name {
         Some(name) => format!("⚠️ 承認依頼 - {} [{}]", project, name),
         None => format!("⚠️ 承認依頼 - {}", project),
     };
@@ -459,11 +503,18 @@ fn show_simple_notification(app: &tauri::AppHandle, title: &str, body: &str) {
 }
 
 /// Show notification for elicitation dialogs (user input requests)
-fn show_notification_event(app: &tauri::AppHandle, payload: &NotificationEventPayload) {
+fn show_notification_event(
+    app: &tauri::AppHandle,
+    session_name_manager: &SessionNameManager,
+    payload: &NotificationEventPayload,
+) {
     let project = extract_project_name(&payload.cwd);
 
+    // Resolve session name from session_id
+    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
+
     // Format title with optional session name
-    let title = match &payload.session_name {
+    let title = match session_name {
         Some(name) => format!("💬 入力が必要です - {} [{}]", project, name),
         None => format!("💬 入力が必要です - {}", project),
     };
@@ -538,9 +589,11 @@ pub fn run() {
     }
 
     let session_manager = Arc::new(SessionManager::new());
+    let session_name_manager = Arc::new(SessionNameManager::new());
     let app_state = std::sync::Mutex::new(AppState {
         broker: Some(broker),
         session_manager: session_manager.clone(),
+        session_name_manager: session_name_manager.clone(),
     });
 
     tauri::Builder::default()
@@ -568,7 +621,7 @@ pub fn run() {
             let _tray = tray::init_tray(app)?;
 
             let app_handle = app.handle().clone();
-            start_message_handler(app_handle, session_manager.clone());
+            start_message_handler(app_handle, session_manager.clone(), session_name_manager.clone());
 
             info!("Application setup complete");
             Ok(())

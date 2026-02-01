@@ -2,7 +2,9 @@
 //!
 //! Manages the state of Claude Code sessions, including
 //! tracking active sessions, their status, and aggregated metrics.
+//! Also handles session ID to display name mapping.
 
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -213,6 +215,133 @@ impl SessionManager {
     }
 }
 
+// =============================================================================
+// Session Name Manager
+// =============================================================================
+
+/// Adjectives for random session names (humorous/cute)
+const ADJECTIVES: &[&str] = &[
+    "Sleepy", "Hungry", "Grumpy", "Happy", "Dizzy",
+    "Sneaky", "Fluffy", "Spicy", "Chill", "Hyper",
+    "Cosmic", "Turbo", "Ninja", "Pixel", "Retro",
+    "Funky", "Jazzy", "Mellow", "Zesty", "Quirky",
+    "Bouncy", "Giggly", "Wobbly", "Snazzy", "Zippy",
+    "Fancy", "Gloomy", "Jolly", "Mighty", "Witty",
+];
+
+/// Nouns for random session names (animals/creatures)
+const NOUNS: &[&str] = &[
+    "Penguin", "Capybara", "Alpaca", "Quokka", "Axolotl",
+    "Panda", "Otter", "Sloth", "Koala", "Hedgehog",
+    "Narwhal", "Platypus", "Wombat", "Raccoon", "RedPanda",
+    "Corgi", "Shiba", "Hamster", "Chinchilla", "Ferret",
+    "Gecko", "Owl", "Fox", "Tanuki", "Kiwi",
+    "Dolphin", "Seal", "Whale", "Octopus", "Jellyfish",
+];
+
+/// Session name manager - maps session IDs to human-readable names
+///
+/// This manager assigns random, humorous names (like "Sleepy Penguin" or "Cosmic Capybara")
+/// to session IDs. Names are assigned on first encounter and persisted for the session lifetime.
+#[derive(Debug, Clone)]
+pub struct SessionNameManager {
+    /// Map from session_id to display name
+    names: Arc<RwLock<HashMap<String, String>>>,
+    /// Set of currently used names (to avoid duplicates)
+    used_names: Arc<RwLock<std::collections::HashSet<String>>>,
+}
+
+impl Default for SessionNameManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionNameManager {
+    pub fn new() -> Self {
+        Self {
+            names: Arc::new(RwLock::new(HashMap::new())),
+            used_names: Arc::new(RwLock::new(std::collections::HashSet::new())),
+        }
+    }
+
+    /// Get or create a display name for a session ID
+    ///
+    /// If the session ID already has a name, returns it.
+    /// Otherwise, generates a random unique name and stores it.
+    pub fn get_or_create_name(&self, session_id: &str) -> String {
+        // Check if name already exists
+        {
+            let names = self.names.read().expect("Failed to acquire read lock");
+            if let Some(name) = names.get(session_id) {
+                return name.clone();
+            }
+        }
+
+        // Generate a new unique name
+        let new_name = self.generate_unique_name();
+
+        // Store the new name
+        {
+            let mut names = self.names.write().expect("Failed to acquire write lock");
+            let mut used = self.used_names.write().expect("Failed to acquire write lock");
+
+            // Double-check in case another thread added it
+            if let Some(name) = names.get(session_id) {
+                return name.clone();
+            }
+
+            names.insert(session_id.to_string(), new_name.clone());
+            used.insert(new_name.clone());
+            info!("Assigned name '{}' to session '{}'", new_name, session_id);
+        }
+
+        new_name
+    }
+
+    /// Generate a unique random name that hasn't been used yet
+    fn generate_unique_name(&self) -> String {
+        let used = self.used_names.read().expect("Failed to acquire read lock");
+        let mut rng = rand::rng();
+
+        // Try to find an unused combination
+        for _ in 0..100 {
+            let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"Happy");
+            let noun = NOUNS.choose(&mut rng).unwrap_or(&"Penguin");
+            let name = format!("{} {}", adj, noun);
+
+            if !used.contains(&name) {
+                return name;
+            }
+        }
+
+        // Fallback: add random suffix if all combinations are taken
+        let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"Happy");
+        let noun = NOUNS.choose(&mut rng).unwrap_or(&"Penguin");
+        let suffix: u16 = rand::random::<u16>() % 1000;
+        format!("{} {} #{}", adj, noun, suffix)
+    }
+
+    /// Remove a session and free up its name for reuse
+    #[allow(dead_code)]
+    pub fn remove_session(&self, session_id: &str) {
+        let mut names = self.names.write().expect("Failed to acquire write lock");
+        let mut used = self.used_names.write().expect("Failed to acquire write lock");
+
+        if let Some(name) = names.remove(session_id) {
+            used.remove(&name);
+            info!("Removed session '{}' (was '{}')", session_id, name);
+        }
+    }
+
+    /// Get the number of active sessions
+    #[allow(dead_code)]
+    pub fn session_count(&self) -> usize {
+        let names = self.names.read().expect("Failed to acquire read lock");
+        names.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +421,50 @@ mod tests {
         let tooltip = manager.generate_tooltip();
         assert!(tooltip.contains("Sessions: 1"));
         assert!(tooltip.contains("$0.05"));
+    }
+
+    // SessionNameManager tests
+
+    #[test]
+    fn test_session_name_manager_assigns_name() {
+        let manager = SessionNameManager::new();
+        let name = manager.get_or_create_name("wsl-12345");
+
+        // Name should contain an adjective and a noun
+        assert!(name.contains(' '));
+        let parts: Vec<&str> = name.split(' ').collect();
+        assert!(parts.len() >= 2);
+    }
+
+    #[test]
+    fn test_session_name_manager_returns_same_name() {
+        let manager = SessionNameManager::new();
+        let name1 = manager.get_or_create_name("session-abc");
+        let name2 = manager.get_or_create_name("session-abc");
+
+        assert_eq!(name1, name2);
+    }
+
+    #[test]
+    fn test_session_name_manager_unique_names() {
+        let manager = SessionNameManager::new();
+        let name1 = manager.get_or_create_name("session-1");
+        let name2 = manager.get_or_create_name("session-2");
+        let name3 = manager.get_or_create_name("session-3");
+
+        // All names should be different
+        assert_ne!(name1, name2);
+        assert_ne!(name2, name3);
+        assert_ne!(name1, name3);
+    }
+
+    #[test]
+    fn test_session_name_manager_remove_session() {
+        let manager = SessionNameManager::new();
+        let _name = manager.get_or_create_name("session-to-remove");
+
+        assert_eq!(manager.session_count(), 1);
+        manager.remove_session("session-to-remove");
+        assert_eq!(manager.session_count(), 0);
     }
 }
