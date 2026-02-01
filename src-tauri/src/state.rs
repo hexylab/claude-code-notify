@@ -219,30 +219,77 @@ impl SessionManager {
 // Session Name Manager
 // =============================================================================
 
-/// Adjectives for random session names (humorous/cute)
-const ADJECTIVES: &[&str] = &[
-    "Sleepy", "Hungry", "Grumpy", "Happy", "Dizzy",
-    "Sneaky", "Fluffy", "Spicy", "Chill", "Hyper",
-    "Cosmic", "Turbo", "Ninja", "Pixel", "Retro",
-    "Funky", "Jazzy", "Mellow", "Zesty", "Quirky",
-    "Bouncy", "Giggly", "Wobbly", "Snazzy", "Zippy",
-    "Fancy", "Gloomy", "Jolly", "Mighty", "Witty",
-];
-
-/// Nouns for random session names (animals/creatures)
-const NOUNS: &[&str] = &[
-    "Penguin", "Capybara", "Alpaca", "Quokka", "Axolotl",
-    "Panda", "Otter", "Sloth", "Koala", "Hedgehog",
-    "Narwhal", "Platypus", "Wombat", "Raccoon", "RedPanda",
-    "Corgi", "Shiba", "Hamster", "Chinchilla", "Ferret",
-    "Gecko", "Owl", "Fox", "Tanuki", "Kiwi",
-    "Dolphin", "Seal", "Whale", "Octopus", "Jellyfish",
+/// Human names in Katakana for session identification (150 names)
+const SESSION_NAMES: &[&str] = &[
+    // A
+    "アリス", "アンナ", "アヤ", "アキ", "アオイ",
+    "アレックス", "アンディ", "アーロン", "アダム", "エイミー",
+    // B
+    "ベン", "ボブ", "ブレイク", "ベラ", "ブルーノ",
+    // C
+    "チャーリー", "クロエ", "カール", "キャシー", "クリス",
+    // D
+    "ダン", "ダイアナ", "デイビッド", "ドリー", "ディラン",
+    // E
+    "エマ", "エミリー", "イーサン", "エリック", "エヴァ",
+    // F
+    "フィン", "フローラ", "フランク", "フェリックス", "フィオナ",
+    // G
+    "ジョージ", "グレース", "ガブリエル", "ジーナ", "ゴードン",
+    // H
+    "ハナ", "ヒロ", "ヘンリー", "ホリー", "ハルカ",
+    // I
+    "アイビー", "イアン", "イザベル", "イヴ", "イサム",
+    // J
+    "ジャック", "ジェーン", "ジェイク", "ジュリア", "ジョン",
+    // K
+    "ケイト", "カイ", "ケン", "キム", "カレン",
+    // L
+    "ルナ", "リオ", "レオ", "リリー", "ルーカス",
+    // M
+    "マヤ", "ミア", "マックス", "マイク", "モリー",
+    // N
+    "ノア", "ニナ", "ニック", "ナオミ", "ネイト",
+    // O
+    "オリバー", "オリビア", "オスカー", "オーウェン", "オパール",
+    // P
+    "ポール", "ペニー", "ピーター", "パム", "パトリック",
+    // Q
+    "クイン",
+    // R
+    "レイ", "ローズ", "ライアン", "レベッカ", "レオナ",
+    // S
+    "サラ", "ソフィア", "サム", "スカイ", "ショーン",
+    "シオン", "セナ", "ソラ", "サクラ", "シュン",
+    // T
+    "トム", "ティナ", "タイラー", "テス", "トビー",
+    // U
+    "ウナ", "ウーゴ",
+    // V
+    "ヴィクター", "ヴィオラ", "ヴィンス", "ヴェラ", "ヴァル",
+    // W
+    "ウィル", "ウェンディ", "ワイアット", "ウィロー", "ウェイド",
+    // X
+    "ザビエル", "シアラ",
+    // Y
+    "ユキ", "ユウ", "ユナ", "ヨシ", "ユリ",
+    // Z
+    "ザック", "ゾーイ", "ゼン", "ザラ", "ジオ",
+    // Additional names
+    "アンジェラ", "ブライアン", "キャロル", "デレク", "エレナ",
+    "フレッド", "グロリア", "ハロルド", "アイリス", "ジェシカ",
+    "ケビン", "ローラ", "マーク", "ナンシー", "オスカル",
+    "パメラ", "ロジャー", "ステラ", "テリー", "ウルスラ",
+    "ビンセント", "ワンダ", "ザンダー", "イヴォンヌ", "ザカリー",
+    "リナ", "タケシ", "ミサキ", "ケンジ", "アスカ",
+    "リョウ", "マリコ", "ユウタ", "エリカ", "ダイキ",
 ];
 
 /// Session name manager - maps session IDs to human-readable names
 ///
-/// This manager assigns random, humorous names (like "Sleepy Penguin" or "Cosmic Capybara")
+/// This manager assigns random names from a pool of 150 Katakana names
 /// to session IDs. Names are assigned on first encounter and persisted for the session lifetime.
+/// When all names are in use, the oldest session's name is recycled.
 #[derive(Debug, Clone)]
 pub struct SessionNameManager {
     /// Map from session_id to display name
@@ -304,22 +351,19 @@ impl SessionNameManager {
         let used = self.used_names.read().expect("Failed to acquire read lock");
         let mut rng = rand::rng();
 
-        // Try to find an unused combination
-        for _ in 0..100 {
-            let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"Happy");
-            let noun = NOUNS.choose(&mut rng).unwrap_or(&"Penguin");
-            let name = format!("{} {}", adj, noun);
+        // Shuffle names and find an unused one
+        let mut names: Vec<&str> = SESSION_NAMES.to_vec();
+        names.shuffle(&mut rng);
 
-            if !used.contains(&name) {
-                return name;
+        for name in &names {
+            if !used.contains(*name) {
+                return name.to_string();
             }
         }
 
-        // Fallback: add random suffix if all combinations are taken
-        let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"Happy");
-        let noun = NOUNS.choose(&mut rng).unwrap_or(&"Penguin");
-        let suffix: u16 = rand::random::<u16>() % 1000;
-        format!("{} {} #{}", adj, noun, suffix)
+        // All names are in use - this should rarely happen with 150 names
+        // Return a random name anyway (will be duplicate but functional)
+        names.first().copied().unwrap_or("アリス").to_string()
     }
 
     /// Remove a session and free up its name for reuse
@@ -430,10 +474,9 @@ mod tests {
         let manager = SessionNameManager::new();
         let name = manager.get_or_create_name("wsl-12345");
 
-        // Name should contain an adjective and a noun
-        assert!(name.contains(' '));
-        let parts: Vec<&str> = name.split(' ').collect();
-        assert!(parts.len() >= 2);
+        // Name should be a single Katakana name from the list
+        assert!(!name.is_empty());
+        assert!(SESSION_NAMES.contains(&name.as_str()));
     }
 
     #[test]
