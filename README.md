@@ -40,8 +40,6 @@ flowchart LR
     App --> Notif
 ```
 
-<img src="ccnotify-finish.png" alt="タスク完了通知の例" width="600">
-
 <a name="features"></a>
 ## 主な機能
 

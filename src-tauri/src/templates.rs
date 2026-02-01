@@ -2,16 +2,6 @@
 //!
 //! Contains script templates for Claude Code hooks integration.
 
-/// Session ID generation function (shared across all hook scripts)
-/// Generates a unique session identifier using hostname and PPID.
-/// The receiving app (Windows) will map this ID to a human-readable name.
-pub const SESSION_ID_FUNCTION: &str = r#"
-# Generate unique session ID (hostname-ppid)
-get_session_id() {
-    echo "$(hostname)-${PPID}"
-}
-"#;
-
 /// on-stop.sh template (mosquitto_pub version)
 pub const ON_STOP_SH: &str = r#"#!/bin/bash
 # Claude Code Stop Hook - Sends notification via MQTT
@@ -21,13 +11,20 @@ HOST="${CLAUDE_NOTIFY_HOST:-__HOST__}"
 PORT="${CLAUDE_NOTIFY_PORT:-__PORT__}"
 TOPIC="claude-code/events/stop"
 
-# Get current working directory
-CWD="${PWD}"
+# Read input from stdin (Claude Code provides session info as JSON)
+INPUT=$(cat)
 
-__SESSION_ID_FUNCTION__
+# Extract session_id from Claude Code's JSON
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID="$(hostname)-unknown"
+fi
 
-# Get session ID for this Claude Code instance
-SESSION_ID=$(get_session_id)
+# Get cwd from input or fallback to PWD
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+if [ -z "$CWD" ]; then
+    CWD="${PWD}"
+fi
 
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
@@ -54,24 +51,28 @@ HOST="${CLAUDE_NOTIFY_HOST:-__HOST__}"
 PORT="${CLAUDE_NOTIFY_PORT:-__PORT__}"
 TOPIC="claude-code/events/permission-request"
 
-# Get current working directory
-CWD="${PWD}"
+# Read input from stdin (Claude Code provides session info as JSON)
+INPUT=$(cat)
 
-# Read the permission request content from stdin
-REQUEST_CONTENT=$(cat)
+# Extract session_id from Claude Code's JSON
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID="$(hostname)-unknown"
+fi
 
-__SESSION_ID_FUNCTION__
+# Get cwd from input or fallback to PWD
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+if [ -z "$CWD" ]; then
+    CWD="${PWD}"
+fi
 
-# Get session ID for this Claude Code instance
-SESSION_ID=$(get_session_id)
-
-# Create JSON payload
+# Create JSON payload (use entire input as content)
 PAYLOAD=$(cat <<EOF
 {
   "event": "permission-request",
   "cwd": "${CWD}",
   "session_id": "${SESSION_ID}",
-  "content": ${REQUEST_CONTENT},
+  "content": ${INPUT},
   "timestamp": "$(date -Iseconds)"
 }
 EOF
@@ -91,24 +92,28 @@ HOST="${CLAUDE_NOTIFY_HOST:-__HOST__}"
 PORT="${CLAUDE_NOTIFY_PORT:-__PORT__}"
 TOPIC="claude-code/events/notification"
 
-# Get current working directory
-CWD="${PWD}"
+# Read input from stdin (Claude Code provides session info as JSON)
+INPUT=$(cat)
 
-# Read the notification content from stdin
-NOTIFICATION_CONTENT=$(cat)
+# Extract session_id from Claude Code's JSON
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID="$(hostname)-unknown"
+fi
 
-__SESSION_ID_FUNCTION__
+# Get cwd from input or fallback to PWD
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+if [ -z "$CWD" ]; then
+    CWD="${PWD}"
+fi
 
-# Get session ID for this Claude Code instance
-SESSION_ID=$(get_session_id)
-
-# Create JSON payload
+# Create JSON payload (use entire input as content)
 PAYLOAD=$(cat <<EOF
 {
   "event": "notification",
   "cwd": "${CWD}",
   "session_id": "${SESSION_ID}",
-  "content": ${NOTIFICATION_CONTENT},
+  "content": ${INPUT},
   "timestamp": "$(date -Iseconds)"
 }
 EOF
@@ -565,16 +570,6 @@ MQTT ポート: __PORT__
 // Windows (PowerShell) Templates
 // =============================================================================
 
-/// Session ID generation function for PowerShell
-/// Generates a unique session identifier using hostname and PID.
-/// The receiving app (Windows) will map this ID to a human-readable name.
-pub const SESSION_ID_FUNCTION_PS1: &str = r#"
-# Generate unique session ID (hostname-pid)
-function Get-SessionId {
-    return "$env:COMPUTERNAME-$PID"
-}
-"#;
-
 /// on-stop.ps1 template for Windows
 pub const ON_STOP_PS1: &str = r#"#Requires -Version 5.1
 # Claude Code Stop Hook - Sends notification via MQTT
@@ -593,10 +588,22 @@ $NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "_
 $Topic = "claude-code/events/stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-__SESSION_ID_FUNCTION__
+# Read input from stdin (Claude Code provides session info as JSON)
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+$InputJson = $reader.ReadToEnd()
+$reader.Close()
 
-$SessionId = Get-SessionId
-$Cwd = (Get-Location).Path
+# Extract session_id from Claude Code's JSON
+try {
+    $InputObj = $InputJson | ConvertFrom-Json
+    $SessionId = $InputObj.session_id
+    if (-not $SessionId) { $SessionId = "$env:COMPUTERNAME-unknown" }
+    $Cwd = if ($InputObj.cwd) { $InputObj.cwd } else { (Get-Location).Path }
+} catch {
+    $SessionId = "$env:COMPUTERNAME-unknown"
+    $Cwd = (Get-Location).Path
+}
+
 $Timestamp = Get-Date -Format "o"
 
 $PayloadObj = @{
@@ -629,29 +636,30 @@ $NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "_
 $Topic = "claude-code/events/permission-request"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Read request content from stdin with proper UTF-8 handling
+# Read input from stdin (Claude Code provides session info as JSON)
 $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
-$RequestContent = $reader.ReadToEnd()
+$InputJson = $reader.ReadToEnd()
 $reader.Close()
 
-__SESSION_ID_FUNCTION__
-
-$SessionId = Get-SessionId
-$Cwd = (Get-Location).Path
-$Timestamp = Get-Date -Format "o"
-
-# Parse the request content
+# Extract session_id from Claude Code's JSON
 try {
-    $ContentObj = $RequestContent | ConvertFrom-Json
+    $InputObj = $InputJson | ConvertFrom-Json
+    $SessionId = $InputObj.session_id
+    if (-not $SessionId) { $SessionId = "$env:COMPUTERNAME-unknown" }
+    $Cwd = if ($InputObj.cwd) { $InputObj.cwd } else { (Get-Location).Path }
 } catch {
-    $ContentObj = @{ raw = $RequestContent }
+    $SessionId = "$env:COMPUTERNAME-unknown"
+    $Cwd = (Get-Location).Path
+    $InputObj = @{ raw = $InputJson }
 }
+
+$Timestamp = Get-Date -Format "o"
 
 $PayloadObj = @{
     event = "permission-request"
     cwd = $Cwd
     session_id = $SessionId
-    content = $ContentObj
+    content = $InputObj
     timestamp = $Timestamp
 }
 $Payload = $PayloadObj | ConvertTo-Json -Depth 10 -Compress
@@ -678,29 +686,30 @@ $NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "_
 $Topic = "claude-code/events/notification"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Read notification content from stdin with proper UTF-8 handling
+# Read input from stdin (Claude Code provides session info as JSON)
 $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
-$NotificationContent = $reader.ReadToEnd()
+$InputJson = $reader.ReadToEnd()
 $reader.Close()
 
-__SESSION_ID_FUNCTION__
-
-$SessionId = Get-SessionId
-$Cwd = (Get-Location).Path
-$Timestamp = Get-Date -Format "o"
-
-# Parse the notification content
+# Extract session_id from Claude Code's JSON
 try {
-    $ContentObj = $NotificationContent | ConvertFrom-Json
+    $InputObj = $InputJson | ConvertFrom-Json
+    $SessionId = $InputObj.session_id
+    if (-not $SessionId) { $SessionId = "$env:COMPUTERNAME-unknown" }
+    $Cwd = if ($InputObj.cwd) { $InputObj.cwd } else { (Get-Location).Path }
 } catch {
-    $ContentObj = @{ raw = $NotificationContent }
+    $SessionId = "$env:COMPUTERNAME-unknown"
+    $Cwd = (Get-Location).Path
+    $InputObj = @{ raw = $InputJson }
 }
+
+$Timestamp = Get-Date -Format "o"
 
 $PayloadObj = @{
     event = "notification"
     cwd = $Cwd
     session_id = $SessionId
-    content = $ContentObj
+    content = $InputObj
     timestamp = $Timestamp
 }
 $Payload = $PayloadObj | ConvertTo-Json -Depth 10 -Compress

@@ -70,8 +70,7 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
         // on-stop.sh
         let on_stop = templates::ON_STOP_SH
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string())
-            .replace("__SESSION_ID_FUNCTION__", templates::SESSION_ID_FUNCTION);
+            .replace("__PORT__", &config.port.to_string());
 
         zip.start_file("on-stop.sh", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -81,8 +80,7 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
         // on-permission-request.sh
         let on_permission_request = templates::ON_PERMISSION_REQUEST_SH
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string())
-            .replace("__SESSION_ID_FUNCTION__", templates::SESSION_ID_FUNCTION);
+            .replace("__PORT__", &config.port.to_string());
 
         zip.start_file("on-permission-request.sh", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -92,8 +90,7 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
         // on-notification.sh
         let on_notification = templates::ON_NOTIFICATION_SH
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string())
-            .replace("__SESSION_ID_FUNCTION__", templates::SESSION_ID_FUNCTION);
+            .replace("__PORT__", &config.port.to_string());
 
         zip.start_file("on-notification.sh", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -183,8 +180,7 @@ pub fn generate_windows_export_zip(
         // on-stop.ps1
         let on_stop = templates::ON_STOP_PS1
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string())
-            .replace("__SESSION_ID_FUNCTION__", templates::SESSION_ID_FUNCTION_PS1);
+            .replace("__PORT__", &config.port.to_string());
 
         zip.start_file("on-stop.ps1", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -194,8 +190,7 @@ pub fn generate_windows_export_zip(
         // on-permission-request.ps1
         let on_permission_request = templates::ON_PERMISSION_REQUEST_PS1
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string())
-            .replace("__SESSION_ID_FUNCTION__", templates::SESSION_ID_FUNCTION_PS1);
+            .replace("__PORT__", &config.port.to_string());
 
         zip.start_file("on-permission-request.ps1", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -205,8 +200,7 @@ pub fn generate_windows_export_zip(
         // on-notification.ps1
         let on_notification = templates::ON_NOTIFICATION_PS1
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string())
-            .replace("__SESSION_ID_FUNCTION__", templates::SESSION_ID_FUNCTION_PS1);
+            .replace("__PORT__", &config.port.to_string());
 
         zip.start_file("on-notification.ps1", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
