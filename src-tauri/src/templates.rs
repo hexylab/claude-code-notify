@@ -2,6 +2,95 @@
 //!
 //! Contains script templates for Claude Code hooks integration.
 
+/// Session name management function (shared across all hook scripts)
+/// This function assigns human-readable names to Claude Code sessions
+/// based on PPID (parent process ID) for identification.
+pub const SESSION_NAME_FUNCTION: &str = r#"
+# Session name management
+SESSION_FILE="/tmp/claude-notify-sessions.json"
+STALE_THRESHOLD=1800  # 30 minutes in seconds
+
+# Human names for session identification (50 names)
+SESSION_NAMES=(
+    "Alice" "Bob" "Charlie" "Diana" "Edward"
+    "Fiona" "George" "Hannah" "Ivan" "Julia"
+    "Kevin" "Luna" "Marcus" "Nancy" "Oscar"
+    "Paula" "Quinn" "Rachel" "Steven" "Teresa"
+    "Uma" "Victor" "Wendy" "Xavier" "Yuki"
+    "Zara" "Alex" "Blake" "Casey" "Drew"
+    "Ellis" "Finley" "Gray" "Harper" "Indigo"
+    "Jordan" "Kendall" "Logan" "Morgan" "Nico"
+    "Parker" "Reagan" "Sage" "Taylor" "Unity"
+    "Vale" "Winter" "Xen" "Yael" "Zion"
+)
+
+get_session_name() {
+    local ppid="$PPID"
+    local now=$(date +%s)
+
+    # Initialize session file if missing or invalid
+    if [ ! -f "$SESSION_FILE" ] || ! jq -e . "$SESSION_FILE" >/dev/null 2>&1; then
+        echo '{"sessions":{}}' > "$SESSION_FILE"
+    fi
+
+    # Use file locking to prevent race conditions
+    (
+        flock -x 200
+
+        local sessions=$(cat "$SESSION_FILE")
+
+        # Check if PPID already has a name
+        local existing_name=$(echo "$sessions" | jq -r --arg ppid "$ppid" '.sessions[$ppid].name // empty')
+
+        if [ -n "$existing_name" ]; then
+            # Update last_seen and return existing name
+            echo "$sessions" | jq --arg ppid "$ppid" --argjson now "$now" \
+                '.sessions[$ppid].last_seen = $now' > "$SESSION_FILE"
+            echo "$existing_name"
+            return
+        fi
+
+        # Get list of currently used names
+        local used_names=$(echo "$sessions" | jq -r '.sessions[].name')
+
+        # Find an unused name
+        local new_name=""
+        for name in "${SESSION_NAMES[@]}"; do
+            if ! echo "$used_names" | grep -qx "$name"; then
+                new_name="$name"
+                break
+            fi
+        done
+
+        # If all names are used, recycle from oldest stale session
+        if [ -z "$new_name" ]; then
+            local stale_cutoff=$((now - STALE_THRESHOLD))
+            local oldest=$(echo "$sessions" | jq -r --argjson cutoff "$stale_cutoff" '
+                .sessions | to_entries
+                | map(select(.value.last_seen < $cutoff))
+                | sort_by(.value.last_seen)
+                | first
+                | .key // empty
+            ')
+
+            if [ -n "$oldest" ]; then
+                new_name=$(echo "$sessions" | jq -r --arg ppid "$oldest" '.sessions[$ppid].name')
+                sessions=$(echo "$sessions" | jq --arg ppid "$oldest" 'del(.sessions[$ppid])')
+            else
+                # All sessions are active - use fallback with short hash
+                new_name="Session-${ppid: -4}"
+            fi
+        fi
+
+        # Register new session
+        echo "$sessions" | jq --arg ppid "$ppid" --arg name "$new_name" --argjson now "$now" \
+            '.sessions[$ppid] = {"name": $name, "last_seen": $now}' > "$SESSION_FILE"
+
+        echo "$new_name"
+    ) 200>"$SESSION_FILE.lock"
+}
+"#;
+
 /// on-stop.sh template (mosquitto_pub version)
 pub const ON_STOP_SH: &str = r#"#!/bin/bash
 # Claude Code Stop Hook - Sends notification via MQTT
@@ -14,11 +103,17 @@ TOPIC="claude-code/events/stop"
 # Get current working directory
 CWD="${PWD}"
 
+__SESSION_NAME_FUNCTION__
+
+# Get session name for this Claude Code instance
+SESSION_NAME=$(get_session_name)
+
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
 {
   "event": "stop",
   "cwd": "${CWD}",
+  "session_name": "${SESSION_NAME}",
   "timestamp": "$(date -Iseconds)"
 }
 EOF
@@ -44,11 +139,17 @@ CWD="${PWD}"
 # Read the permission request content from stdin
 REQUEST_CONTENT=$(cat)
 
+__SESSION_NAME_FUNCTION__
+
+# Get session name for this Claude Code instance
+SESSION_NAME=$(get_session_name)
+
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
 {
   "event": "permission-request",
   "cwd": "${CWD}",
+  "session_name": "${SESSION_NAME}",
   "content": ${REQUEST_CONTENT},
   "timestamp": "$(date -Iseconds)"
 }
@@ -75,11 +176,17 @@ CWD="${PWD}"
 # Read the notification content from stdin
 NOTIFICATION_CONTENT=$(cat)
 
+__SESSION_NAME_FUNCTION__
+
+# Get session name for this Claude Code instance
+SESSION_NAME=$(get_session_name)
+
 # Create JSON payload
 PAYLOAD=$(cat <<EOF
 {
   "event": "notification",
   "cwd": "${CWD}",
+  "session_name": "${SESSION_NAME}",
   "content": ${NOTIFICATION_CONTENT},
   "timestamp": "$(date -Iseconds)"
 }
@@ -531,4 +638,625 @@ MQTT ポート: __PORT__
     which mosquitto_pub
 - ネットワーク接続を確認:
     ping __HOST__
+"#;
+
+// =============================================================================
+// Windows (PowerShell) Templates
+// =============================================================================
+
+/// Session name management function for PowerShell
+pub const SESSION_NAME_FUNCTION_PS1: &str = r#"
+# Session name management (PowerShell version)
+$SessionFile = "$env:TEMP\claude-notify-sessions.json"
+$StaleThreshold = 1800  # 30 minutes in seconds
+
+$SessionNames = @(
+    "Alice", "Bob", "Charlie", "Diana", "Edward",
+    "Fiona", "George", "Hannah", "Ivan", "Julia",
+    "Kevin", "Luna", "Marcus", "Nancy", "Oscar",
+    "Paula", "Quinn", "Rachel", "Steven", "Teresa",
+    "Uma", "Victor", "Wendy", "Xavier", "Yuki",
+    "Zara", "Alex", "Blake", "Casey", "Drew",
+    "Ellis", "Finley", "Gray", "Harper", "Indigo",
+    "Jordan", "Kendall", "Logan", "Morgan", "Nico",
+    "Parker", "Reagan", "Sage", "Taylor", "Unity",
+    "Vale", "Winter", "Xen", "Yael", "Zion"
+)
+
+function Get-SessionName {
+    $ppid = $PID
+    $now = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
+
+    # Initialize session file if missing or invalid
+    if (-not (Test-Path $SessionFile)) {
+        @{ sessions = @{} } | ConvertTo-Json | Set-Content $SessionFile -Encoding UTF8
+    }
+
+    try {
+        $sessionsRaw = Get-Content $SessionFile -Raw -ErrorAction Stop
+        $sessions = $sessionsRaw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $sessions = [PSCustomObject]@{ sessions = @{} }
+    }
+
+    # Convert to hashtable for easier manipulation
+    $sessionsHash = @{}
+    if ($sessions.sessions -and $sessions.sessions.PSObject.Properties) {
+        $sessions.sessions.PSObject.Properties | ForEach-Object {
+            $sessionsHash[$_.Name] = $_.Value
+        }
+    }
+
+    # Check if PID already has a name
+    $ppidStr = $ppid.ToString()
+    if ($sessionsHash.ContainsKey($ppidStr)) {
+        $entry = $sessionsHash[$ppidStr]
+        $sessionsHash[$ppidStr] = @{
+            name = $entry.name
+            last_seen = $now
+        }
+        @{ sessions = $sessionsHash } | ConvertTo-Json -Depth 10 | Set-Content $SessionFile -Encoding UTF8
+        return $entry.name
+    }
+
+    # Get list of currently used names
+    $usedNames = @()
+    $sessionsHash.Values | ForEach-Object { $usedNames += $_.name }
+
+    # Find an unused name
+    $newName = $null
+    foreach ($name in $SessionNames) {
+        if ($name -notin $usedNames) {
+            $newName = $name
+            break
+        }
+    }
+
+    # If all names are used, recycle from oldest stale session or use fallback
+    if (-not $newName) {
+        $staleCutoff = $now - $StaleThreshold
+        $oldest = $null
+        $oldestTime = [long]::MaxValue
+
+        foreach ($key in $sessionsHash.Keys) {
+            $entry = $sessionsHash[$key]
+            if ($entry.last_seen -lt $staleCutoff -and $entry.last_seen -lt $oldestTime) {
+                $oldest = $key
+                $oldestTime = $entry.last_seen
+            }
+        }
+
+        if ($oldest) {
+            $newName = $sessionsHash[$oldest].name
+            $sessionsHash.Remove($oldest)
+        } else {
+            $suffix = $ppidStr
+            if ($suffix.Length -gt 4) { $suffix = $suffix.Substring($suffix.Length - 4) }
+            $newName = "Session-$suffix"
+        }
+    }
+
+    # Register new session
+    $sessionsHash[$ppidStr] = @{
+        name = $newName
+        last_seen = $now
+    }
+
+    @{ sessions = $sessionsHash } | ConvertTo-Json -Depth 10 | Set-Content $SessionFile -Encoding UTF8
+    return $newName
+}
+"#;
+
+/// on-stop.ps1 template for Windows
+pub const ON_STOP_PS1: &str = r#"#Requires -Version 5.1
+# Claude Code Stop Hook - Sends notification via MQTT
+# Generated by Claude Code Notify
+
+param()
+
+$ErrorActionPreference = "SilentlyContinue"
+
+# Ensure UTF-8 encoding for pipe output
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$NotifyHost = if ($env:CLAUDE_NOTIFY_HOST) { $env:CLAUDE_NOTIFY_HOST } else { "__HOST__" }
+$NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "__PORT__" }
+$Topic = "claude-code/events/stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+__SESSION_NAME_FUNCTION__
+
+$SessionName = Get-SessionName
+$Cwd = (Get-Location).Path
+$Timestamp = Get-Date -Format "o"
+
+$PayloadObj = @{
+    event = "stop"
+    cwd = $Cwd
+    session_name = $SessionName
+    timestamp = $Timestamp
+}
+$Payload = $PayloadObj | ConvertTo-Json -Compress
+
+# Use stdin to avoid escaping issues
+$Payload | & "$ScriptDir\mqtt-publish.exe" -h $NotifyHost -p $NotifyPort -t $Topic --stdin
+"#;
+
+/// on-permission-request.ps1 template for Windows
+pub const ON_PERMISSION_REQUEST_PS1: &str = r#"#Requires -Version 5.1
+# Claude Code Permission Request Hook - Sends approval request notifications via MQTT
+# Generated by Claude Code Notify
+
+param()
+
+$ErrorActionPreference = "SilentlyContinue"
+
+# Ensure UTF-8 encoding for pipe output
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$NotifyHost = if ($env:CLAUDE_NOTIFY_HOST) { $env:CLAUDE_NOTIFY_HOST } else { "__HOST__" }
+$NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "__PORT__" }
+$Topic = "claude-code/events/permission-request"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Read request content from stdin with proper UTF-8 handling
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+$RequestContent = $reader.ReadToEnd()
+$reader.Close()
+
+__SESSION_NAME_FUNCTION__
+
+$SessionName = Get-SessionName
+$Cwd = (Get-Location).Path
+$Timestamp = Get-Date -Format "o"
+
+# Parse the request content
+try {
+    $ContentObj = $RequestContent | ConvertFrom-Json
+} catch {
+    $ContentObj = @{ raw = $RequestContent }
+}
+
+$PayloadObj = @{
+    event = "permission-request"
+    cwd = $Cwd
+    session_name = $SessionName
+    content = $ContentObj
+    timestamp = $Timestamp
+}
+$Payload = $PayloadObj | ConvertTo-Json -Depth 10 -Compress
+
+# Use stdin to avoid escaping issues
+$Payload | & "$ScriptDir\mqtt-publish.exe" -h $NotifyHost -p $NotifyPort -t $Topic --stdin
+"#;
+
+/// on-notification.ps1 template for Windows
+pub const ON_NOTIFICATION_PS1: &str = r#"#Requires -Version 5.1
+# Claude Code Notification Hook - Sends elicitation dialog notifications via MQTT
+# Generated by Claude Code Notify
+
+param()
+
+$ErrorActionPreference = "SilentlyContinue"
+
+# Ensure UTF-8 encoding for pipe output
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$NotifyHost = if ($env:CLAUDE_NOTIFY_HOST) { $env:CLAUDE_NOTIFY_HOST } else { "__HOST__" }
+$NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "__PORT__" }
+$Topic = "claude-code/events/notification"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Read notification content from stdin with proper UTF-8 handling
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+$NotificationContent = $reader.ReadToEnd()
+$reader.Close()
+
+__SESSION_NAME_FUNCTION__
+
+$SessionName = Get-SessionName
+$Cwd = (Get-Location).Path
+$Timestamp = Get-Date -Format "o"
+
+# Parse the notification content
+try {
+    $ContentObj = $NotificationContent | ConvertFrom-Json
+} catch {
+    $ContentObj = @{ raw = $NotificationContent }
+}
+
+$PayloadObj = @{
+    event = "notification"
+    cwd = $Cwd
+    session_name = $SessionName
+    content = $ContentObj
+    timestamp = $Timestamp
+}
+$Payload = $PayloadObj | ConvertTo-Json -Depth 10 -Compress
+
+# Use stdin to avoid escaping issues
+$Payload | & "$ScriptDir\mqtt-publish.exe" -h $NotifyHost -p $NotifyPort -t $Topic --stdin
+"#;
+
+/// statusline.ps1 template for Windows
+pub const STATUSLINE_PS1: &str = r#"#Requires -Version 5.1
+# Claude Code Statusline - Sends status updates via MQTT and outputs status
+# Generated by Claude Code Notify
+
+param()
+
+$ErrorActionPreference = "SilentlyContinue"
+
+# Ensure UTF-8 encoding for pipe output
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$NotifyHost = if ($env:CLAUDE_NOTIFY_HOST) { $env:CLAUDE_NOTIFY_HOST } else { "__HOST__" }
+$NotifyPort = if ($env:CLAUDE_NOTIFY_PORT) { $env:CLAUDE_NOTIFY_PORT } else { "__PORT__" }
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Read the statusline JSON from stdin with proper UTF-8 handling
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+$InputJson = $reader.ReadToEnd()
+$reader.Close()
+
+try {
+    $Input_ = $InputJson | ConvertFrom-Json
+} catch {
+    Write-Host "[Claude] Status unavailable"
+    exit 0
+}
+
+# Extract session_id from input
+$SessionId = if ($Input_.session_id) { $Input_.session_id } else { "default-session" }
+$Topic = "claude-code/status/$SessionId"
+
+# Extract status info for display
+$Model = if ($Input_.model.display_name) { $Input_.model.display_name } else { "Claude" }
+$Cost = if ($Input_.cost.total_cost_usd) { $Input_.cost.total_cost_usd } else { 0 }
+$Context = if ($Input_.context_window.used_percentage) { $Input_.context_window.used_percentage } else { 0 }
+$LinesAdded = if ($Input_.cost.total_lines_added) { $Input_.cost.total_lines_added } else { 0 }
+$LinesRemoved = if ($Input_.cost.total_lines_removed) { $Input_.cost.total_lines_removed } else { 0 }
+$Cwd = if ($Input_.cwd) { $Input_.cwd } else { "" }
+
+# Create status payload for MQTT
+$PayloadObj = @{
+    session_id = $SessionId
+    cwd = $Cwd
+    status = @{
+        state = "active"
+        context_percent = $Context
+        cost_usd = $Cost
+        lines_added = $LinesAdded
+        lines_removed = $LinesRemoved
+    }
+    timestamp = (Get-Date -Format "o")
+}
+$Payload = $PayloadObj | ConvertTo-Json -Depth 10 -Compress
+
+# Send MQTT message in background using stdin
+Start-Job -ScriptBlock {
+    param($exe, $h, $p, $t, $payload)
+    $payload | & $exe -h $h -p $p -t $t -r --stdin
+} -ArgumentList "$ScriptDir\mqtt-publish.exe", $NotifyHost, $NotifyPort, $Topic, $Payload | Out-Null
+
+# Output status text for Claude Code statusline display
+$CostFormatted = $Cost.ToString("F4")
+$ContextFormatted = [math]::Round($Context, 0)
+Write-Host "[$Model] `$$CostFormatted | Ctx: $ContextFormatted% | +$LinesAdded/-$LinesRemoved" -NoNewline
+"#;
+
+/// install.ps1 template - Automated installer for Windows
+pub const INSTALL_PS1: &str = r#"#Requires -Version 5.1
+# Claude Code Notify - Windows Installer Script
+# Generated by Claude Code Notify
+#
+# Usage: .\install.ps1 [-WithStatusline]
+
+param(
+    [switch]$WithStatusline
+)
+
+$ErrorActionPreference = "Stop"
+
+# Configuration
+$NotifyHost = "__HOST__"
+$NotifyPort = "__PORT__"
+$ScriptsDir = "$env:USERPROFILE\.claude-notify-scripts"
+$SettingsFile = "$env:USERPROFILE\.claude\settings.json"
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "  Claude Code Notify Installer" -ForegroundColor Green
+Write-Host "  Windows Native Edition" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+
+# Get script source directory
+$ScriptSourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Create scripts directory
+Write-Host "Installing scripts to $ScriptsDir..." -ForegroundColor Yellow
+if (-not (Test-Path $ScriptsDir)) {
+    New-Item -ItemType Directory -Path $ScriptsDir -Force | Out-Null
+}
+
+# Copy files
+Copy-Item "$ScriptSourceDir\mqtt-publish.exe" "$ScriptsDir\" -Force
+Copy-Item "$ScriptSourceDir\on-stop.ps1" "$ScriptsDir\" -Force
+Copy-Item "$ScriptSourceDir\on-permission-request.ps1" "$ScriptsDir\" -Force
+Copy-Item "$ScriptSourceDir\on-notification.ps1" "$ScriptsDir\" -Force
+
+if ($WithStatusline) {
+    Copy-Item "$ScriptSourceDir\statusline.ps1" "$ScriptsDir\" -Force
+}
+
+Write-Host "  [OK] Scripts installed" -ForegroundColor Green
+
+# Update Claude Code settings
+Write-Host ""
+Write-Host "Updating Claude Code settings..." -ForegroundColor Yellow
+
+$ClaudeDir = Split-Path -Parent $SettingsFile
+if (-not (Test-Path $ClaudeDir)) {
+    New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
+}
+
+$ExistingSettings = @{}
+if (Test-Path $SettingsFile) {
+    # Backup existing settings
+    $BackupPath = "$SettingsFile.backup.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    Copy-Item $SettingsFile $BackupPath
+    Write-Host "  [OK] Backed up existing settings to $BackupPath" -ForegroundColor Green
+
+    try {
+        $ExistingSettings = Get-Content $SettingsFile -Raw | ConvertFrom-Json -AsHashtable
+    } catch {
+        $ExistingSettings = @{}
+    }
+}
+
+# Escape backslashes for JSON
+$ScriptsDirEscaped = $ScriptsDir.Replace('\', '\\')
+
+# Prepare hooks configuration
+$StopCommand = "powershell.exe -ExecutionPolicy Bypass -File `"$ScriptsDir\on-stop.ps1`""
+$PermissionCommand = "powershell.exe -ExecutionPolicy Bypass -File `"$ScriptsDir\on-permission-request.ps1`""
+$NotificationCommand = "powershell.exe -ExecutionPolicy Bypass -File `"$ScriptsDir\on-notification.ps1`""
+
+# Build hooks structure
+if (-not $ExistingSettings.ContainsKey("hooks")) {
+    $ExistingSettings["hooks"] = @{}
+}
+
+# Helper function to filter out our hooks and add new one
+function Update-HookArray {
+    param($existing, $newHook, $scriptsDir)
+
+    $filtered = @()
+    if ($existing) {
+        foreach ($hook in $existing) {
+            $isOurs = $false
+            if ($hook.hooks) {
+                foreach ($h in $hook.hooks) {
+                    if ($h.command -and $h.command -like "*\.claude-notify-scripts\*") {
+                        $isOurs = $true
+                        break
+                    }
+                }
+            }
+            if (-not $isOurs) {
+                $filtered += $hook
+            }
+        }
+    }
+    return @($filtered) + @($newHook)
+}
+
+# Stop hook
+$StopHook = @{
+    matcher = ""
+    hooks = @(
+        @{
+            type = "command"
+            command = $StopCommand
+        }
+    )
+}
+$ExistingSettings["hooks"]["Stop"] = Update-HookArray $ExistingSettings["hooks"]["Stop"] $StopHook $ScriptsDir
+
+# PermissionRequest hook
+$PermissionHook = @{
+    matcher = ""
+    hooks = @(
+        @{
+            type = "command"
+            command = $PermissionCommand
+        }
+    )
+}
+$ExistingSettings["hooks"]["PermissionRequest"] = Update-HookArray $ExistingSettings["hooks"]["PermissionRequest"] $PermissionHook $ScriptsDir
+
+# Notification hook
+$NotificationHook = @{
+    matcher = "elicitation_dialog"
+    hooks = @(
+        @{
+            type = "command"
+            command = $NotificationCommand
+        }
+    )
+}
+$ExistingSettings["hooks"]["Notification"] = Update-HookArray $ExistingSettings["hooks"]["Notification"] $NotificationHook $ScriptsDir
+
+# Add statusline if requested
+if ($WithStatusline) {
+    $StatuslineCommand = "powershell.exe -ExecutionPolicy Bypass -File `"$ScriptsDir\statusline.ps1`""
+    $ExistingSettings["statusLine"] = @{
+        type = "command"
+        command = $StatuslineCommand
+    }
+    Write-Host "  [OK] Statusline configured" -ForegroundColor Green
+}
+
+# Write settings
+$ExistingSettings | ConvertTo-Json -Depth 10 | Set-Content $SettingsFile -Encoding UTF8
+Write-Host "  [OK] Settings updated" -ForegroundColor Green
+
+# Environment variables hint
+Write-Host ""
+Write-Host "Environment variables (optional):" -ForegroundColor Yellow
+Write-Host "  `$env:CLAUDE_NOTIFY_HOST = `"$NotifyHost`""
+Write-Host "  `$env:CLAUDE_NOTIFY_PORT = `"$NotifyPort`""
+
+# Connection test
+Write-Host ""
+Write-Host "Testing connection to Windows PC..." -ForegroundColor Yellow
+try {
+    $result = & "$ScriptsDir\mqtt-publish.exe" -h $NotifyHost -p $NotifyPort -t "claude-code/test" -m "install-test" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  [OK] Connection successful" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] Connection failed - check firewall settings" -ForegroundColor Red
+    }
+} catch {
+    Write-Host "  [FAIL] Connection failed - $($_.Exception.Message)" -ForegroundColor Red
+}
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "Installation complete!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Installed hooks:"
+Write-Host "  - Stop (task completion notification)"
+Write-Host "  - PermissionRequest (approval request notification)"
+Write-Host "  - Notification (input request notification)"
+if ($WithStatusline) {
+    Write-Host "  - statusLine (real-time status)"
+}
+Write-Host ""
+Write-Host "Please restart Claude Code to apply changes."
+Write-Host "========================================" -ForegroundColor Green
+"#;
+
+/// Claude Code settings.json snippet template for Windows
+pub const CLAUDE_SETTINGS_SNIPPET_WINDOWS: &str = r#"{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -ExecutionPolicy Bypass -File \"__SCRIPTS_DIR__\\on-stop.ps1\""
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -ExecutionPolicy Bypass -File \"__SCRIPTS_DIR__\\on-permission-request.ps1\""
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -ExecutionPolicy Bypass -File \"__SCRIPTS_DIR__\\on-notification.ps1\""
+          }
+        ]
+      }
+    ]
+  }
+}
+"#;
+
+/// README.txt template for Windows setup instructions
+pub const README_WINDOWS_TEMPLATE: &str = r#"Claude Code Notify セットアップガイド (Windows)
+================================================
+
+【クイックスタート】自動インストール
+====================================
+
+1. ZIPを展開:
+   - 任意のフォルダに展開してください
+
+2. PowerShellでインストーラを実行:
+   - エクスプローラーで展開したフォルダを開く
+   - アドレスバーに「powershell」と入力してEnter
+   - 以下のコマンドを実行:
+
+   .\install.ps1
+
+   ※ statusline機能も使う場合:
+   .\install.ps1 -WithStatusline
+
+3. Claude Code を再起動
+
+
+【手動セットアップ】
+====================================
+
+1. 含まれるファイル
+-------------------
+- mqtt-publish.exe        : MQTT送信ツール（追加インストール不要）
+- on-stop.ps1             : タスク完了時の通知 (Stop hook)
+- on-permission-request.ps1: 承認依頼通知 (PermissionRequest hook)
+- on-notification.ps1     : 入力要求通知 (Notification hook)
+- statusline.ps1          : ステータスライン更新 (オプション)
+
+2. ファイルの配置
+-------------------
+1. すべてのファイルを以下にコピー:
+   %USERPROFILE%\.claude-notify-scripts\
+
+2. PowerShellでコピー:
+   New-Item -ItemType Directory -Path "$env:USERPROFILE\.claude-notify-scripts" -Force
+   Copy-Item *.exe,*.ps1 "$env:USERPROFILE\.claude-notify-scripts\"
+
+3. Claude Code の設定
+-------------------
+1. %USERPROFILE%\.claude\settings.json を開く (なければ作成)
+
+2. hooks-settings-snippet.json の内容を参考に設定を追加
+
+3. __SCRIPTS_DIR__ を実際のパスに置換
+   例: C:\Users\YourName\.claude-notify-scripts
+
+4. 接続情報
+-------------------
+Windows PC の IP アドレス: __HOST__
+MQTT ポート: __PORT__
+
+5. テスト方法
+-------------------
+PowerShellで手動でスクリプトを実行して通知が届くか確認:
+
+  & "$env:USERPROFILE\.claude-notify-scripts\on-stop.ps1"
+
+または mqtt-publish.exe で直接テスト:
+
+  & "$env:USERPROFILE\.claude-notify-scripts\mqtt-publish.exe" -h __HOST__ -p __PORT__ -t "claude-code/events/stop" -m '{"event":"stop","cwd":"C:\\test"}'
+
+6. トラブルシューティング
+-------------------
+- ファイアウォールで TCP __PORT__ を許可しているか確認
+- Windows側のアプリが起動しているか確認
+- PowerShell実行ポリシーを確認:
+    Get-ExecutionPolicy
+  必要に応じて:
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+- ネットワーク接続を確認:
+    Test-NetConnection -ComputerName __HOST__ -Port __PORT__
 "#;

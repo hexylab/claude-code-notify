@@ -1,0 +1,8 @@
+[workspace]
+members = ["src-tauri", "mqtt-publish"]
+resolver = "2"
+
+[workspace.dependencies]
+rumqttc = "0.25"
+serde_json = "1"
+thiserror = "2"

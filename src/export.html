@@ -46,27 +46,37 @@
                 <div id="ip-status" class="ip-status hidden"></div>
             </div>
 
-            <div class="form-group">
-                <label for="client-type">
-                    <span class="label-icon">▶</span>
-                    MQTTクライアント
-                </label>
-                <div class="select-wrapper">
-                    <select id="client-type">
-                        <option value="mosquitto_pub" selected>mosquitto_pub (推奨)</option>
-                    </select>
-                    <span class="select-arrow">▼</span>
-                </div>
+        </section>
+
+        <section class="config-section">
+            <div class="section-header">
+                <span class="pixel-marker"></span>
+                <h2>プラットフォーム選択</h2>
             </div>
+            <p class="platform-hint">
+                Claude Codeを実行している環境を選択してください
+            </p>
         </section>
 
         <div class="actions">
-            <button type="button" id="export-btn" class="btn-primary">
-                <span class="btn-content">
-                    <span class="export-icon">↓</span>
-                    ZIPとしてエクスポート
-                </span>
-            </button>
+            <div class="platform-buttons">
+                <button type="button" id="export-linux-btn" class="btn-primary btn-linux">
+                    <span class="btn-content">
+                        <span class="export-icon">🐧</span>
+                        Linux / WSL 用
+                    </span>
+                </button>
+                <button type="button" id="export-windows-btn" class="btn-primary btn-windows">
+                    <span class="btn-content">
+                        <span class="export-icon">🪟</span>
+                        Windows 用
+                    </span>
+                </button>
+            </div>
+            <p class="platform-description">
+                <strong>Linux / WSL:</strong> mosquitto_pub + jq が必要<br>
+                <strong>Windows:</strong> 追加インストール不要（mqtt-publish.exe同梱）
+            </p>
         </div>
 
         <div id="status" class="status hidden"></div>

@@ -5,7 +5,8 @@ const { writeFile } = window.__TAURI__.fs;
 document.addEventListener('DOMContentLoaded', () => {
     const hostInput = document.getElementById('host');
     const detectIpBtn = document.getElementById('detect-ip');
-    const exportBtn = document.getElementById('export-btn');
+    const exportLinuxBtn = document.getElementById('export-linux-btn');
+    const exportWindowsBtn = document.getElementById('export-windows-btn');
     const statusDiv = document.getElementById('status');
     const ipStatusDiv = document.getElementById('ip-status');
 
@@ -13,12 +14,13 @@ document.addEventListener('DOMContentLoaded', () => {
     detectIp();
 
     detectIpBtn.addEventListener('click', detectIp);
-    exportBtn.addEventListener('click', exportConfig);
+    exportLinuxBtn.addEventListener('click', () => exportConfig('linux_wsl'));
+    exportWindowsBtn.addEventListener('click', () => exportConfig('windows'));
 
     async function detectIp() {
         try {
             detectIpBtn.disabled = true;
-            detectIpBtn.textContent = '検出中...';
+            detectIpBtn.querySelector('.btn-text').textContent = '検出中...';
 
             const ip = await invoke('detect_ip');
             hostInput.value = ip;
@@ -28,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showIpStatus('検出に失敗しました', 'error');
         } finally {
             detectIpBtn.disabled = false;
-            detectIpBtn.textContent = '自動検出';
+            detectIpBtn.querySelector('.btn-text').textContent = '自動検出';
         }
     }
 
@@ -43,7 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function exportConfig() {
+    async function exportConfig(platform) {
         const host = hostInput.value.trim();
         const port = 1883;
 
@@ -52,23 +54,32 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        try {
-            exportBtn.disabled = true;
-            exportBtn.textContent = 'エクスポート中...';
+        const btn = platform === 'windows' ? exportWindowsBtn : exportLinuxBtn;
+        const originalContent = btn.innerHTML;
+        const platformName = platform === 'windows' ? 'Windows' : 'Linux/WSL';
+        const defaultFileName = platform === 'windows'
+            ? 'claude-code-notify-windows-setup.zip'
+            : 'claude-code-notify-linux-setup.zip';
 
-            // Generate ZIP data
-            const zipData = await invoke('generate_config_zip', { host, port });
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="btn-content">エクスポート中...</span>';
+
+            // Generate ZIP data using the new v2 command
+            const zipData = await invoke('generate_config_zip_v2', {
+                options: { host, port, platform }
+            });
 
             // Show save dialog
             const filePath = await save({
-                defaultPath: 'claude-code-notify-setup.zip',
+                defaultPath: defaultFileName,
                 filters: [{ name: 'ZIP Archive', extensions: ['zip'] }]
             });
 
             if (filePath) {
                 // Write file
                 await writeFile(filePath, new Uint8Array(zipData));
-                showStatus('エクスポートが完了しました: ' + filePath, 'success');
+                showStatus(`${platformName}用設定をエクスポートしました: ${filePath}`, 'success');
             } else {
                 showStatus('エクスポートがキャンセルされました', 'info');
             }
@@ -76,8 +87,8 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Export failed:', error);
             showStatus('エクスポートに失敗しました: ' + error, 'error');
         } finally {
-            exportBtn.disabled = false;
-            exportBtn.textContent = 'ZIPとしてエクスポート';
+            btn.disabled = false;
+            btn.innerHTML = originalContent;
         }
     }
 

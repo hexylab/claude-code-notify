@@ -15,12 +15,22 @@ pub enum ExportError {
     IpDetection(String),
     #[error("Failed to create ZIP: {0}")]
     ZipCreation(String),
+    #[error("Missing mqtt-publish binary: {0}")]
+    MissingBinary(String),
 }
 
 /// MQTT client types supported for export
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientType {
     MosquittoPub,
+}
+
+/// Target platform for export
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportPlatform {
+    LinuxWsl,
+    Windows,
 }
 
 /// Export configuration
@@ -60,7 +70,8 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
         // on-stop.sh
         let on_stop = templates::ON_STOP_SH
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string());
+            .replace("__PORT__", &config.port.to_string())
+            .replace("__SESSION_NAME_FUNCTION__", templates::SESSION_NAME_FUNCTION);
 
         zip.start_file("on-stop.sh", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -70,7 +81,8 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
         // on-permission-request.sh
         let on_permission_request = templates::ON_PERMISSION_REQUEST_SH
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string());
+            .replace("__PORT__", &config.port.to_string())
+            .replace("__SESSION_NAME_FUNCTION__", templates::SESSION_NAME_FUNCTION);
 
         zip.start_file("on-permission-request.sh", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -80,7 +92,8 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
         // on-notification.sh
         let on_notification = templates::ON_NOTIFICATION_SH
             .replace("__HOST__", &config.host)
-            .replace("__PORT__", &config.port.to_string());
+            .replace("__PORT__", &config.port.to_string())
+            .replace("__SESSION_NAME_FUNCTION__", templates::SESSION_NAME_FUNCTION);
 
         zip.start_file("on-notification.sh", options)
             .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
@@ -116,6 +129,119 @@ pub fn generate_export_zip(config: &ExportConfig) -> Result<Vec<u8>, ExportError
 
         // README.txt
         let readme = templates::README_TEMPLATE
+            .replace("__HOST__", &config.host)
+            .replace("__PORT__", &config.port.to_string());
+
+        zip.start_file("README.txt", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(readme.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        zip.finish()
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+    }
+
+    Ok(buffer.into_inner())
+}
+
+/// Generate export ZIP file for a specific platform
+pub fn generate_export_zip_for_platform(
+    config: &ExportConfig,
+    platform: ExportPlatform,
+    mqtt_publish_exe: Option<&[u8]>,
+) -> Result<Vec<u8>, ExportError> {
+    match platform {
+        ExportPlatform::LinuxWsl => generate_export_zip(config),
+        ExportPlatform::Windows => generate_windows_export_zip(config, mqtt_publish_exe),
+    }
+}
+
+/// Generate Windows export ZIP file in memory
+pub fn generate_windows_export_zip(
+    config: &ExportConfig,
+    mqtt_publish_exe: Option<&[u8]>,
+) -> Result<Vec<u8>, ExportError> {
+    let mqtt_exe = mqtt_publish_exe
+        .ok_or_else(|| ExportError::MissingBinary("mqtt-publish.exe not provided".to_string()))?;
+
+    let mut buffer = Cursor::new(Vec::new());
+
+    {
+        let mut zip = ZipWriter::new(&mut buffer);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        // mqtt-publish.exe (binary, no compression for better compatibility)
+        let binary_options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("mqtt-publish.exe", binary_options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(mqtt_exe)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // on-stop.ps1
+        let on_stop = templates::ON_STOP_PS1
+            .replace("__HOST__", &config.host)
+            .replace("__PORT__", &config.port.to_string())
+            .replace("__SESSION_NAME_FUNCTION__", templates::SESSION_NAME_FUNCTION_PS1);
+
+        zip.start_file("on-stop.ps1", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(on_stop.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // on-permission-request.ps1
+        let on_permission_request = templates::ON_PERMISSION_REQUEST_PS1
+            .replace("__HOST__", &config.host)
+            .replace("__PORT__", &config.port.to_string())
+            .replace("__SESSION_NAME_FUNCTION__", templates::SESSION_NAME_FUNCTION_PS1);
+
+        zip.start_file("on-permission-request.ps1", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(on_permission_request.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // on-notification.ps1
+        let on_notification = templates::ON_NOTIFICATION_PS1
+            .replace("__HOST__", &config.host)
+            .replace("__PORT__", &config.port.to_string())
+            .replace("__SESSION_NAME_FUNCTION__", templates::SESSION_NAME_FUNCTION_PS1);
+
+        zip.start_file("on-notification.ps1", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(on_notification.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // statusline.ps1 (optional, for users who want real-time status)
+        let statusline = templates::STATUSLINE_PS1
+            .replace("__HOST__", &config.host)
+            .replace("__PORT__", &config.port.to_string());
+
+        zip.start_file("statusline.ps1", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(statusline.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // install.ps1 - Automated installer for Windows
+        let installer = templates::INSTALL_PS1
+            .replace("__HOST__", &config.host)
+            .replace("__PORT__", &config.port.to_string());
+
+        zip.start_file("install.ps1", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(installer.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // hooks-settings-snippet.json (for manual setup reference)
+        let settings = templates::CLAUDE_SETTINGS_SNIPPET_WINDOWS;
+        zip.start_file("hooks-settings-snippet.json", options)
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+        zip.write_all(settings.as_bytes())
+            .map_err(|e| ExportError::ZipCreation(e.to_string()))?;
+
+        // README.txt (Windows version)
+        let readme = templates::README_WINDOWS_TEMPLATE
             .replace("__HOST__", &config.host)
             .replace("__PORT__", &config.port.to_string());
 

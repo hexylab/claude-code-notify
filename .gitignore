@@ -24,7 +24,12 @@ dist-ssr
 *.sw?
 
 # Rust
+target/
 src-tauri/target/
+
+# Build artifacts
+*.exe
+src-tauri/resources/
 
 # Claude
 .claude/

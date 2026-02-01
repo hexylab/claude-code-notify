@@ -12,7 +12,7 @@ mod tray;
 
 use broker::MqttBroker;
 use client::{topics, MqttMessage};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use state::{SessionManager, StatusPayload};
 use std::sync::Arc;
 use tauri_plugin_notification::NotificationExt;
@@ -25,6 +25,8 @@ struct StopEventPayload {
     #[allow(dead_code)]
     event: String,
     cwd: String,
+    /// Human-readable session name (e.g., "Alice", "Bob")
+    session_name: Option<String>,
     #[allow(dead_code)]
     timestamp: Option<String>,
 }
@@ -35,6 +37,8 @@ struct PermissionRequestPayload {
     #[allow(dead_code)]
     event: String,
     cwd: String,
+    /// Human-readable session name (e.g., "Alice", "Bob")
+    session_name: Option<String>,
     content: PermissionRequestContent,
     #[allow(dead_code)]
     timestamp: Option<String>,
@@ -45,6 +49,8 @@ struct PermissionRequestPayload {
 struct PermissionRequestContent {
     tool_name: Option<String>,
     tool_input: Option<serde_json::Value>,
+    /// Fallback raw content when JSON parsing fails in the hook script
+    raw: Option<String>,
 }
 
 /// Payload structure for notification events from Claude Code
@@ -53,6 +59,8 @@ struct NotificationEventPayload {
     #[allow(dead_code)]
     event: String,
     cwd: String,
+    /// Human-readable session name (e.g., "Alice", "Bob")
+    session_name: Option<String>,
     content: NotificationContent,
     #[allow(dead_code)]
     timestamp: Option<String>,
@@ -67,6 +75,8 @@ struct NotificationContent {
     message: Option<String>,
     #[allow(dead_code)]
     question: Option<String>,
+    /// Fallback raw content when JSON parsing fails in the hook script
+    raw: Option<String>,
 }
 
 fn init_logging() {
@@ -105,6 +115,44 @@ fn generate_config_zip(host: String, port: u16) -> Result<Vec<u8>, String> {
         client_type: export::ClientType::MosquittoPub,
     };
     export::generate_export_zip(&config).map_err(|e| e.to_string())
+}
+
+/// Export options for platform-specific configuration export
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportOptions {
+    pub host: String,
+    pub port: u16,
+    pub platform: String, // "linux_wsl" or "windows"
+}
+
+#[tauri::command]
+fn generate_config_zip_v2(options: ExportOptions) -> Result<Vec<u8>, String> {
+    let platform = match options.platform.as_str() {
+        "windows" => export::ExportPlatform::Windows,
+        _ => export::ExportPlatform::LinuxWsl,
+    };
+
+    let config = export::ExportConfig {
+        host: options.host,
+        port: options.port,
+        client_type: export::ClientType::MosquittoPub,
+    };
+
+    // For Windows export, try to include the mqtt-publish.exe binary
+    let mqtt_publish_exe = if platform == export::ExportPlatform::Windows {
+        // Try to read from the workspace target directory
+        let exe_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/mqtt-publish.exe");
+        std::fs::read(exe_path).ok()
+    } else {
+        None
+    };
+
+    export::generate_export_zip_for_platform(
+        &config,
+        platform,
+        mqtt_publish_exe.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn start_message_handler(app_handle: tauri::AppHandle, session_manager: Arc<SessionManager>) {
@@ -234,7 +282,12 @@ fn extract_project_name(cwd: &str) -> &str {
 /// Show notification for stop event
 fn show_stop_notification(app: &tauri::AppHandle, payload: &StopEventPayload) {
     let project = extract_project_name(&payload.cwd);
-    let title = format!("✅ タスク完了 - {}", project);
+
+    // Format title with optional session name
+    let title = match &payload.session_name {
+        Some(name) => format!("✅ タスク完了 - {} [{}]", project, name),
+        None => format!("✅ タスク完了 - {}", project),
+    };
     let body = payload.cwd.clone();
 
     info!("Attempting to show notification: {} - {}", title, body);
@@ -249,25 +302,135 @@ fn show_stop_notification(app: &tauri::AppHandle, payload: &StopEventPayload) {
     }
 }
 
-/// Show notification for permission request (approval needed)
+/// Show notification for permission request (approval needed) or AskUserQuestion
 fn show_permission_request_notification(app: &tauri::AppHandle, payload: &PermissionRequestPayload) {
     let project = extract_project_name(&payload.cwd);
-    let title = format!("⚠️ 承認依頼 - {}", project);
 
-    let tool_name = payload
-        .content
-        .tool_name
-        .as_deref()
-        .unwrap_or("ツール");
+    // Check if this is an AskUserQuestion (question from Claude, not a permission request)
+    let is_ask_user_question = payload.content.tool_name.as_deref() == Some("AskUserQuestion")
+        || payload.content.raw.as_ref().map_or(false, |raw| {
+            serde_json::from_str::<serde_json::Value>(raw)
+                .ok()
+                .and_then(|v| v.get("tool_name").and_then(|t| t.as_str()).map(|s| s == "AskUserQuestion"))
+                .unwrap_or(false)
+        });
 
-    let body = if let Some(input) = &payload.content.tool_input {
-        if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
-            format!("{}: {}", tool_name, command)
+    if is_ask_user_question {
+        // Show as a question notification
+        show_ask_user_question_notification(app, payload, project);
+    } else {
+        // Show as a permission request notification
+        show_tool_permission_notification(app, payload, project);
+    }
+}
+
+/// Show notification for AskUserQuestion (Claude is asking a question)
+fn show_ask_user_question_notification(app: &tauri::AppHandle, payload: &PermissionRequestPayload, project: &str) {
+    // Format title with optional session name
+    let title = match &payload.session_name {
+        Some(name) => format!("❓ 質問 - {} [{}]", project, name),
+        None => format!("❓ 質問 - {}", project),
+    };
+
+    // Try to extract the question text
+    let body = extract_question_text(&payload.content)
+        .unwrap_or_else(|| "Claude から質問が来ています".to_string());
+
+    info!("Attempting to show AskUserQuestion notification: {} - {}", title, body);
+
+    match app.notification().builder().title(&title).body(&body).show() {
+        Ok(_) => {
+            info!("Notification sent successfully");
+        }
+        Err(e) => {
+            error!("Failed to show notification: {}", e);
+        }
+    }
+}
+
+/// Extract question text from AskUserQuestion content
+fn extract_question_text(content: &PermissionRequestContent) -> Option<String> {
+    // Try to get from tool_input.questions[0].question
+    if let Some(input) = &content.tool_input {
+        if let Some(questions) = input.get("questions").and_then(|q| q.as_array()) {
+            if let Some(first_question) = questions.first() {
+                if let Some(question_text) = first_question.get("question").and_then(|q| q.as_str()) {
+                    return Some(question_text.to_string());
+                }
+            }
+        }
+    }
+
+    // Try to parse from raw JSON
+    if let Some(raw) = &content.raw {
+        if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(raw) {
+            // Try tool_input.questions[0].question path
+            if let Some(questions) = raw_json.get("tool_input")
+                .and_then(|ti| ti.get("questions"))
+                .and_then(|q| q.as_array())
+            {
+                if let Some(first_question) = questions.first() {
+                    if let Some(question_text) = first_question.get("question").and_then(|q| q.as_str()) {
+                        return Some(question_text.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Show notification for tool permission request (approval needed)
+fn show_tool_permission_notification(app: &tauri::AppHandle, payload: &PermissionRequestPayload, project: &str) {
+    // Format title with optional session name
+    let title = match &payload.session_name {
+        Some(name) => format!("⚠️ 承認依頼 - {} [{}]", project, name),
+        None => format!("⚠️ 承認依頼 - {}", project),
+    };
+
+    // Try to extract useful info from content
+    let body = if let Some(tool_name) = &payload.content.tool_name {
+        // Standard format with tool_name
+        if let Some(input) = &payload.content.tool_input {
+            if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
+                format!("{}: {}", tool_name, command)
+            } else {
+                format!("{} の実行許可が必要です", tool_name)
+            }
         } else {
             format!("{} の実行許可が必要です", tool_name)
         }
+    } else if let Some(raw) = &payload.content.raw {
+        // Fallback: try to parse raw JSON from Claude Code
+        if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(raw) {
+            // Try to extract tool info from raw JSON
+            let tool = raw_json.get("tool_name")
+                .or_else(|| raw_json.get("tool"))
+                .and_then(|v| v.as_str());
+
+            let command = raw_json.get("tool_input")
+                .or_else(|| raw_json.get("input"))
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_str());
+
+            match (tool, command) {
+                (Some(t), Some(c)) => format!("{}: {}", t, c),
+                (Some(t), None) => format!("{} の実行許可が必要です", t),
+                (None, Some(c)) => format!("コマンド: {}", c),
+                (None, None) => "ツールの実行許可が必要です".to_string(),
+            }
+        } else {
+            // Raw is not valid JSON, show truncated version
+            let truncated = if raw.len() > 100 {
+                format!("{}...", &raw[..100])
+            } else {
+                raw.clone()
+            };
+            format!("承認が必要: {}", truncated)
+        }
     } else {
-        format!("{} の実行許可が必要です", tool_name)
+        "ツールの実行許可が必要です".to_string()
     };
 
     info!("Attempting to show notification: {} - {}", title, body);
@@ -298,18 +461,43 @@ fn show_simple_notification(app: &tauri::AppHandle, title: &str, body: &str) {
 /// Show notification for elicitation dialogs (user input requests)
 fn show_notification_event(app: &tauri::AppHandle, payload: &NotificationEventPayload) {
     let project = extract_project_name(&payload.cwd);
-    let title = format!("💬 入力が必要です - {}", project);
 
-    let message = payload
-        .content
-        .message
-        .as_deref()
-        .or(payload.content.title.as_deref())
-        .unwrap_or("Claude が入力を待っています");
+    // Format title with optional session name
+    let title = match &payload.session_name {
+        Some(name) => format!("💬 入力が必要です - {} [{}]", project, name),
+        None => format!("💬 入力が必要です - {}", project),
+    };
+
+    // Try to extract message from content
+    let message = if let Some(msg) = payload.content.message.as_deref() {
+        msg.to_string()
+    } else if let Some(title) = payload.content.title.as_deref() {
+        title.to_string()
+    } else if let Some(raw) = &payload.content.raw {
+        // Fallback: try to parse raw JSON
+        if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(raw) {
+            raw_json.get("message")
+                .or_else(|| raw_json.get("title"))
+                .or_else(|| raw_json.get("question"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Claude が入力を待っています".to_string())
+        } else {
+            // Raw is not valid JSON
+            let truncated = if raw.len() > 100 {
+                format!("{}...", &raw[..100])
+            } else {
+                raw.clone()
+            };
+            truncated
+        }
+    } else {
+        "Claude が入力を待っています".to_string()
+    };
 
     info!("Attempting to show notification: {} - {}", title, message);
 
-    match app.notification().builder().title(&title).body(message).show() {
+    match app.notification().builder().title(&title).body(&message).show() {
         Ok(_) => {
             info!("Notification sent successfully");
         }
@@ -388,7 +576,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_broker_status,
             detect_ip,
-            generate_config_zip
+            generate_config_zip,
+            generate_config_zip_v2
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

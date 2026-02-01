@@ -1,0 +1,14 @@
+[package]
+name = "mqtt-publish"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight MQTT publish client for CCNotify"
+
+[dependencies]
+rumqttc = "0.25"
+clap = { version = "4", features = ["derive", "env"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
