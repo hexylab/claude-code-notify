@@ -3,18 +3,26 @@
 //! A Tauri v2 application that provides desktop notifications
 //! for Claude Code task completions via MQTT.
 
+mod audio;
 mod broker;
 mod client;
 mod export;
+mod notification_state;
+mod settings;
 mod state;
+mod taskbar;
 mod templates;
 mod tray;
+mod tray_flash;
 
 use broker::MqttBroker;
 use client::{topics, MqttMessage};
+use notification_state::NotificationState;
 use serde::{Deserialize, Serialize};
+use settings::NotificationSettings;
 use state::{SessionManager, SessionNameManager, StatusPayload};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -79,6 +87,7 @@ struct NotificationEventPayload {
 #[derive(Debug, Deserialize)]
 struct NotificationContent {
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     notification_type: Option<String>,
     title: Option<String>,
     message: Option<String>,
@@ -102,6 +111,119 @@ pub struct AppState {
     pub broker: Option<MqttBroker>,
     pub session_manager: Arc<SessionManager>,
     pub session_name_manager: Arc<SessionNameManager>,
+}
+
+/// 通知を一元管理するマネージャー
+/// 設定に基づいて、音声・タスクバー・トレイアイコン・Toast通知を制御する
+pub struct NotificationManager {
+    settings: Arc<RwLock<NotificationSettings>>,
+    state: NotificationState,
+    tray_flasher: tray_flash::TrayFlasher,
+}
+
+// NotificationManager を Send + Sync にするため、HWND を保持しない
+unsafe impl Send for NotificationManager {}
+unsafe impl Sync for NotificationManager {}
+
+impl NotificationManager {
+    /// 新しい NotificationManager を作成
+    pub fn new(app: &tauri::AppHandle) -> Self {
+        let settings = settings::load_settings(app);
+
+        Self {
+            settings: Arc::new(RwLock::new(settings)),
+            state: NotificationState::new(),
+            tray_flasher: tray_flash::TrayFlasher::new(),
+        }
+    }
+
+    /// 設定を更新
+    pub fn update_settings(&self, new_settings: NotificationSettings) {
+        if let Ok(mut settings) = self.settings.write() {
+            *settings = new_settings;
+        }
+    }
+
+    /// 現在の設定を取得
+    pub fn get_settings(&self) -> NotificationSettings {
+        self.settings.read().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// 通知を発火（すべての通知チャネルを統合管理）
+    pub fn notify(&self, app: &tauri::AppHandle, title: &str, body: &str) {
+        let settings = self.get_settings();
+
+        // 1. Toast通知
+        if settings.toast_notification_enabled {
+            match app.notification().builder().title(title).body(body).show() {
+                Ok(_) => info!("Toast notification sent"),
+                Err(e) => error!("Failed to show toast notification: {}", e),
+            }
+        }
+
+        // 2. 通知音
+        if settings.sound_enabled {
+            audio::play_notification_sound(settings.sound_volume);
+        }
+
+        // 3. 未確認カウント増加
+        let count = self.state.increment();
+
+        // 4. ウィンドウの表示状態を確認
+        let window_visible = app
+            .get_webview_window("main")
+            .map(|w| w.is_visible().unwrap_or(false))
+            .unwrap_or(false);
+
+        // 5. タスクバー機能（Windows専用、ウィンドウが表示されている場合）
+        #[cfg(windows)]
+        if window_visible {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(hwnd) = taskbar::get_hwnd(&window) {
+                    // タスクバー点滅
+                    if settings.taskbar_flash_enabled {
+                        taskbar::flash_taskbar(hwnd, 3);
+                    }
+
+                    // バッジ更新
+                    if settings.taskbar_badge_enabled {
+                        if let Err(e) = taskbar::set_overlay_badge(hwnd, count) {
+                            error!("Failed to set overlay badge: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. トレイアイコン点滅（ウィンドウが非表示の場合）
+        if !window_visible && settings.tray_flash_enabled {
+            self.tray_flasher.start_flash(app);
+        }
+    }
+
+    /// 通知状態をリセット（ウィンドウがフォーカスを得た時など）
+    pub fn reset(&self, app: &tauri::AppHandle) {
+        self.state.reset();
+
+        // トレイアイコン点滅を停止
+        self.tray_flasher.stop_flash(app);
+
+        #[cfg(windows)]
+        if let Some(window) = app.get_webview_window("main") {
+            if let Some(hwnd) = taskbar::get_hwnd(&window) {
+                if let Err(e) = taskbar::clear_overlay_badge(hwnd) {
+                    error!("Failed to clear overlay badge: {}", e);
+                }
+                taskbar::stop_flash(hwnd);
+            }
+        }
+    }
+
+    /// 未確認カウントを取得
+    #[allow(dead_code)]
+    pub fn get_unread_count(&self) -> u32 {
+        self.state.get()
+    }
 }
 
 #[tauri::command]
@@ -169,6 +291,7 @@ fn start_message_handler(
     app_handle: tauri::AppHandle,
     session_manager: Arc<SessionManager>,
     session_name_manager: Arc<SessionNameManager>,
+    notification_manager: Arc<NotificationManager>,
 ) {
     // Wait for broker to start
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -185,7 +308,7 @@ fn start_message_handler(
 
         rt.block_on(async move {
             while let Some(msg) = rx.recv().await {
-                handle_mqtt_message(&app_handle, &session_manager, &session_name_manager, msg);
+                handle_mqtt_message(&app_handle, &session_manager, &session_name_manager, &notification_manager, msg);
             }
             warn!("MQTT message receiver closed");
         });
@@ -196,6 +319,7 @@ fn handle_mqtt_message(
     app: &tauri::AppHandle,
     session_manager: &Arc<SessionManager>,
     session_name_manager: &Arc<SessionNameManager>,
+    notification_manager: &Arc<NotificationManager>,
     msg: MqttMessage,
 ) {
     info!("Received MQTT message on topic: {}", msg.topic);
@@ -206,12 +330,12 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<StopEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Stop event received for: {}", payload.cwd);
-                        show_stop_notification(app, session_name_manager, &payload);
+                        show_stop_notification(app, session_name_manager, notification_manager, &payload);
                     }
                     Err(e) => {
                         warn!("Failed to parse stop event payload: {}", e);
                         // Show notification with raw payload as fallback
-                        show_simple_notification(app, "✅ タスク完了", payload_str);
+                        show_simple_notification(app, notification_manager, "✅ タスク完了", payload_str);
                     }
                 }
             }
@@ -221,11 +345,11 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<PermissionRequestPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Permission request received for: {}", payload.cwd);
-                        show_permission_request_notification(app, session_name_manager, &payload);
+                        show_permission_request_notification(app, session_name_manager, notification_manager, &payload);
                     }
                     Err(e) => {
                         warn!("Failed to parse permission request payload: {}", e);
-                        show_simple_notification(app, "⚠️ 承認依頼", payload_str);
+                        show_simple_notification(app, notification_manager, "⚠️ 承認依頼", payload_str);
                     }
                 }
             }
@@ -235,11 +359,11 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<NotificationEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Notification event received for: {}", payload.cwd);
-                        show_notification_event(app, session_name_manager, &payload);
+                        show_notification_event(app, session_name_manager, notification_manager, &payload);
                     }
                     Err(e) => {
                         warn!("Failed to parse notification event payload: {}", e);
-                        show_simple_notification(app, "💬 通知", payload_str);
+                        show_simple_notification(app, notification_manager, "💬 通知", payload_str);
                     }
                 }
             }
@@ -247,13 +371,13 @@ fn handle_mqtt_message(
         topics::TASK_COMPLETE => {
             if let Some(payload) = msg.payload_str() {
                 info!("Task completed: {}", payload);
-                show_simple_notification(app, "✅ タスク完了", payload);
+                show_simple_notification(app, notification_manager, "✅ タスク完了", payload);
             }
         }
         topics::ERROR => {
             if let Some(payload) = msg.payload_str() {
                 warn!("Error notification: {}", payload);
-                show_simple_notification(app, "❌ エラー", payload);
+                show_simple_notification(app, notification_manager, "❌ エラー", payload);
             }
         }
         topic if topic.starts_with(topics::STATUS_PREFIX) => {
@@ -303,36 +427,29 @@ fn resolve_session_name(session_name_manager: &SessionNameManager, session_id: O
 fn show_stop_notification(
     app: &tauri::AppHandle,
     session_name_manager: &SessionNameManager,
+    notification_manager: &NotificationManager,
     payload: &StopEventPayload,
 ) {
     let project = extract_project_name(&payload.cwd);
 
-    // Resolve session name from session_id
+    // Resolve session name from session_id (SMS-style: sender name as title)
     let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
+    let title = session_name.unwrap_or_else(|| "Claude Code".to_string());
 
-    // Format title with optional session name
-    let title = match session_name {
-        Some(name) => format!("✅ タスク完了 - {} [{}]", project, name),
-        None => format!("✅ タスク完了 - {}", project),
-    };
-    let body = payload.cwd.clone();
+    // SMS-style body: event type + project name
+    let body = format!("✅ タスクが完了しました\n📁 {}", project);
 
     info!("Attempting to show notification: {} - {}", title, body);
 
-    match app.notification().builder().title(&title).body(&body).show() {
-        Ok(_) => {
-            info!("Notification sent successfully");
-        }
-        Err(e) => {
-            error!("Failed to show notification: {}", e);
-        }
-    }
+    // Use NotificationManager for unified notification handling
+    notification_manager.notify(app, &title, &body);
 }
 
 /// Show notification for permission request (approval needed) or AskUserQuestion
 fn show_permission_request_notification(
     app: &tauri::AppHandle,
     session_name_manager: &SessionNameManager,
+    notification_manager: &NotificationManager,
     payload: &PermissionRequestPayload,
 ) {
     let project = extract_project_name(&payload.cwd);
@@ -351,40 +468,35 @@ fn show_permission_request_notification(
 
     if is_ask_user_question {
         // Show as a question notification
-        show_ask_user_question_notification(app, payload, project, session_name.as_deref());
+        show_ask_user_question_notification(app, notification_manager, payload, project, session_name.as_deref());
     } else {
         // Show as a permission request notification
-        show_tool_permission_notification(app, payload, project, session_name.as_deref());
+        show_tool_permission_notification(app, notification_manager, payload, project, session_name.as_deref());
     }
 }
 
 /// Show notification for AskUserQuestion (Claude is asking a question)
 fn show_ask_user_question_notification(
     app: &tauri::AppHandle,
+    notification_manager: &NotificationManager,
     payload: &PermissionRequestPayload,
     project: &str,
     session_name: Option<&str>,
 ) {
-    // Format title with optional session name
-    let title = match session_name {
-        Some(name) => format!("❓ 質問 - {} [{}]", project, name),
-        None => format!("❓ 質問 - {}", project),
-    };
+    // SMS-style: sender name as title
+    let title = session_name.unwrap_or("Claude Code").to_string();
 
     // Try to extract the question text
-    let body = extract_question_text(&payload.content)
-        .unwrap_or_else(|| "Claude から質問が来ています".to_string());
+    let question_text = extract_question_text(&payload.content)
+        .unwrap_or_else(|| "質問が来ています".to_string());
+
+    // SMS-style body: event type + question
+    let body = format!("❓ 質問があります\n{}\n📁 {}", question_text, project);
 
     info!("Attempting to show AskUserQuestion notification: {} - {}", title, body);
 
-    match app.notification().builder().title(&title).body(&body).show() {
-        Ok(_) => {
-            info!("Notification sent successfully");
-        }
-        Err(e) => {
-            error!("Failed to show notification: {}", e);
-        }
-    }
+    // Use NotificationManager for unified notification handling
+    notification_manager.notify(app, &title, &body);
 }
 
 /// Extract question text from AskUserQuestion content
@@ -423,18 +535,16 @@ fn extract_question_text(content: &PermissionRequestContent) -> Option<String> {
 /// Show notification for tool permission request (approval needed)
 fn show_tool_permission_notification(
     app: &tauri::AppHandle,
+    notification_manager: &NotificationManager,
     payload: &PermissionRequestPayload,
     project: &str,
     session_name: Option<&str>,
 ) {
-    // Format title with optional session name
-    let title = match session_name {
-        Some(name) => format!("⚠️ 承認依頼 - {} [{}]", project, name),
-        None => format!("⚠️ 承認依頼 - {}", project),
-    };
+    // SMS-style: sender name as title
+    let title = session_name.unwrap_or("Claude Code").to_string();
 
     // Try to extract useful info from content
-    let body = if let Some(tool_name) = &payload.content.tool_name {
+    let tool_info = if let Some(tool_name) = &payload.content.tool_name {
         // Standard format with tool_name
         if let Some(input) = &payload.content.tool_input {
             if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
@@ -471,59 +581,46 @@ fn show_tool_permission_notification(
             } else {
                 raw.clone()
             };
-            format!("承認が必要: {}", truncated)
+            truncated
         }
     } else {
         "ツールの実行許可が必要です".to_string()
     };
 
+    // SMS-style body: event type + tool info + project
+    let body = format!("⚠️ 承認が必要です\n{}\n📁 {}", tool_info, project);
+
     info!("Attempting to show notification: {} - {}", title, body);
 
-    match app.notification().builder().title(&title).body(&body).show() {
-        Ok(_) => {
-            info!("Notification sent successfully");
-        }
-        Err(e) => {
-            error!("Failed to show notification: {}", e);
-        }
-    }
+    // Use NotificationManager for unified notification handling
+    notification_manager.notify(app, &title, &body);
 }
 
 /// Show simple notification with title and body
-fn show_simple_notification(app: &tauri::AppHandle, title: &str, body: &str) {
+fn show_simple_notification(app: &tauri::AppHandle, notification_manager: &NotificationManager, title: &str, body: &str) {
     info!("Attempting to show notification: {} - {}", title, body);
-    match app.notification().builder().title(title).body(body).show() {
-        Ok(_) => {
-            info!("Notification sent successfully");
-        }
-        Err(e) => {
-            error!("Failed to show notification: {}", e);
-        }
-    }
+    // Use NotificationManager for unified notification handling
+    notification_manager.notify(app, title, body);
 }
 
 /// Show notification for elicitation dialogs (user input requests)
 fn show_notification_event(
     app: &tauri::AppHandle,
     session_name_manager: &SessionNameManager,
+    notification_manager: &NotificationManager,
     payload: &NotificationEventPayload,
 ) {
     let project = extract_project_name(&payload.cwd);
 
-    // Resolve session name from session_id
+    // Resolve session name from session_id (SMS-style: sender name as title)
     let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
-
-    // Format title with optional session name
-    let title = match session_name {
-        Some(name) => format!("💬 入力が必要です - {} [{}]", project, name),
-        None => format!("💬 入力が必要です - {}", project),
-    };
+    let title = session_name.unwrap_or_else(|| "Claude Code".to_string());
 
     // Try to extract message from content
     let message = if let Some(msg) = payload.content.message.as_deref() {
         msg.to_string()
-    } else if let Some(title) = payload.content.title.as_deref() {
-        title.to_string()
+    } else if let Some(content_title) = payload.content.title.as_deref() {
+        content_title.to_string()
     } else if let Some(raw) = &payload.content.raw {
         // Fallback: try to parse raw JSON
         if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(raw) {
@@ -532,7 +629,7 @@ fn show_notification_event(
                 .or_else(|| raw_json.get("question"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "Claude が入力を待っています".to_string())
+                .unwrap_or_else(|| "入力を待っています".to_string())
         } else {
             // Raw is not valid JSON
             let truncated = if raw.len() > 100 {
@@ -543,19 +640,16 @@ fn show_notification_event(
             truncated
         }
     } else {
-        "Claude が入力を待っています".to_string()
+        "入力を待っています".to_string()
     };
 
-    info!("Attempting to show notification: {} - {}", title, message);
+    // SMS-style body: event type + message + project
+    let body = format!("💬 入力が必要です\n{}\n📁 {}", message, project);
 
-    match app.notification().builder().title(&title).body(&message).show() {
-        Ok(_) => {
-            info!("Notification sent successfully");
-        }
-        Err(e) => {
-            error!("Failed to show notification: {}", e);
-        }
-    }
+    info!("Attempting to show notification: {} - {}", title, body);
+
+    // Use NotificationManager for unified notification handling
+    notification_manager.notify(app, &title, &body);
 }
 
 /// Update tray icon tooltip with session metrics
@@ -574,6 +668,16 @@ pub fn run() {
     init_logging();
 
     info!("Starting Claude Code Notify...");
+
+    // Initialize audio system
+    if let Err(e) = audio::init_audio() {
+        error!("Failed to initialize audio system: {}", e);
+    }
+
+    // Initialize taskbar system (Windows only)
+    if let Err(e) = taskbar::init_taskbar() {
+        error!("Failed to initialize taskbar system: {}", e);
+    }
 
     let mut broker = match MqttBroker::with_default_config() {
         Ok(b) => b,
@@ -614,14 +718,21 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(app_state)
         .setup(move |app| {
             info!("Setting up Tauri application...");
 
             let _tray = tray::init_tray(app)?;
 
+            // Create NotificationManager
+            let notification_manager = Arc::new(NotificationManager::new(app.handle()));
+
+            // Store NotificationManager in app state for access from window events
+            app.manage(notification_manager.clone());
+
             let app_handle = app.handle().clone();
-            start_message_handler(app_handle, session_manager.clone(), session_name_manager.clone());
+            start_message_handler(app_handle, session_manager.clone(), session_name_manager.clone(), notification_manager);
 
             info!("Application setup complete");
             Ok(())
@@ -630,17 +741,31 @@ pub fn run() {
             get_broker_status,
             detect_ip,
             generate_config_zip,
-            generate_config_zip_v2
+            generate_config_zip_v2,
+            settings::get_settings,
+            settings::save_settings_command,
+            audio::play_test_sound
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Prevent the window from closing, hide it instead
-                api.prevent_close();
-                if let Err(e) = window.hide() {
-                    error!("Failed to hide window: {}", e);
-                } else {
-                    info!("Window hidden to system tray");
+            match event {
+                tauri::WindowEvent::Focused(true) => {
+                    // Reset notification state when window gains focus
+                    let app_handle = window.app_handle();
+                    if let Some(notification_manager) = app_handle.try_state::<Arc<NotificationManager>>() {
+                        notification_manager.reset(app_handle);
+                        info!("Notification state reset on window focus");
+                    }
                 }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // Prevent the window from closing, hide it instead
+                    api.prevent_close();
+                    if let Err(e) = window.hide() {
+                        error!("Failed to hide window: {}", e);
+                    } else {
+                        info!("Window hidden to system tray");
+                    }
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

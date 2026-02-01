@@ -3,6 +3,8 @@
 //! This module provides system tray functionality including
 //! icon management, context menu, and event handling.
 
+use crate::NotificationManager;
+use std::sync::Arc;
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItem},
@@ -14,6 +16,7 @@ use tracing::{debug, info, warn};
 
 mod menu_ids {
     pub const STATUS: &str = "status";
+    pub const SETTINGS: &str = "settings";
     pub const EXPORT: &str = "export";
     pub const QUIT: &str = "quit";
 }
@@ -23,6 +26,14 @@ pub fn init_tray(app: &mut App) -> Result<TrayIcon, Box<dyn std::error::Error>> 
 
     let status_item =
         MenuItem::with_id(app, menu_ids::STATUS, "Status: Idle", false, None::<&str>)?;
+
+    let settings_item = MenuItem::with_id(
+        app,
+        menu_ids::SETTINGS,
+        "通知設定...",
+        true,
+        None::<&str>,
+    )?;
 
     let export_item = MenuItem::with_id(
         app,
@@ -37,6 +48,7 @@ pub fn init_tray(app: &mut App) -> Result<TrayIcon, Box<dyn std::error::Error>> 
     let menu = MenuBuilder::new(app)
         .item(&status_item)
         .separator()
+        .item(&settings_item)
         .item(&export_item)
         .separator()
         .item(&quit_item)
@@ -61,6 +73,9 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     debug!("Menu event: {:?}", event.id());
 
     match event.id().as_ref() {
+        menu_ids::SETTINGS => {
+            open_settings_window(app);
+        }
         menu_ids::EXPORT => {
             open_export_window(app);
         }
@@ -69,6 +84,34 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             app.exit(0);
         }
         _ => {}
+    }
+}
+
+/// Open the settings window
+fn open_settings_window(app: &AppHandle) {
+    // Check if settings window already exists
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+
+    // Create new settings window
+    info!("Opening settings window...");
+    match WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("通知設定 - Claude Code Notify")
+        .inner_size(450.0, 500.0)
+        .resizable(false)
+        .center()
+        .build()
+    {
+        Ok(window) => {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        Err(e) => {
+            warn!("Failed to create settings window: {}", e);
+        }
     }
 }
 
@@ -109,6 +152,13 @@ fn handle_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
         } => {
             debug!("Tray icon left clicked");
             let app = tray.app_handle();
+
+            // Reset notification state when tray is clicked
+            if let Some(notification_manager) = app.try_state::<Arc<NotificationManager>>() {
+                notification_manager.reset(app);
+                info!("Notification state reset on tray click");
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 if window.is_visible().unwrap_or(false) {
                     let _ = window.hide();
@@ -124,6 +174,13 @@ fn handle_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
         } => {
             debug!("Tray icon double clicked");
             let app = tray.app_handle();
+
+            // Reset notification state when tray is double-clicked
+            if let Some(notification_manager) = app.try_state::<Arc<NotificationManager>>() {
+                notification_manager.reset(app);
+                info!("Notification state reset on tray double-click");
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();

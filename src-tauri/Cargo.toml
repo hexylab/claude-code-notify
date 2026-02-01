@@ -49,3 +49,23 @@ local-ip-address = "0.6"
 # Random name generation
 rand = "0.9"
 
+# Settings storage
+tauri-plugin-store = "2"
+
+# Audio playback
+rodio = { version = "0.20", default-features = false, features = ["mp3"] }
+
+# Image processing for tray icon
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Windows API for taskbar control
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Com",
+    "Win32_Graphics_Gdi",
+] }
+raw-window-handle = "0.6"
+

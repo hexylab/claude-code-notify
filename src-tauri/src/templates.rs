@@ -890,6 +890,7 @@ function Update-HookArray {
             }
         }
     }
+    # Return array directly (caller will wrap in @() to preserve array type)
     return @($filtered) + @($newHook)
 }
 
@@ -903,7 +904,7 @@ $StopHook = @{
         }
     )
 }
-$ExistingSettings["hooks"]["Stop"] = Update-HookArray $ExistingSettings["hooks"]["Stop"] $StopHook $ScriptsDir
+$ExistingSettings["hooks"]["Stop"] = @(Update-HookArray $ExistingSettings["hooks"]["Stop"] $StopHook $ScriptsDir)
 
 # PermissionRequest hook
 $PermissionHook = @{
@@ -915,7 +916,7 @@ $PermissionHook = @{
         }
     )
 }
-$ExistingSettings["hooks"]["PermissionRequest"] = Update-HookArray $ExistingSettings["hooks"]["PermissionRequest"] $PermissionHook $ScriptsDir
+$ExistingSettings["hooks"]["PermissionRequest"] = @(Update-HookArray $ExistingSettings["hooks"]["PermissionRequest"] $PermissionHook $ScriptsDir)
 
 # Notification hook
 $NotificationHook = @{
@@ -927,7 +928,7 @@ $NotificationHook = @{
         }
     )
 }
-$ExistingSettings["hooks"]["Notification"] = Update-HookArray $ExistingSettings["hooks"]["Notification"] $NotificationHook $ScriptsDir
+$ExistingSettings["hooks"]["Notification"] = @(Update-HookArray $ExistingSettings["hooks"]["Notification"] $NotificationHook $ScriptsDir)
 
 # Add statusline if requested
 if ($WithStatusline) {
@@ -1097,3 +1098,80 @@ PowerShellで手動でスクリプトを実行して通知が届くか確認:
 - ネットワーク接続を確認:
     Test-NetConnection -ComputerName __HOST__ -Port __PORT__
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PowerShellの配列が正しく保持されるように、INSTALL_PS1が
+    /// 適切な配列構文を使用していることを確認するテスト
+    #[test]
+    fn test_install_ps1_uses_array_syntax_for_hooks() {
+        // Update-HookArray関数が配列を返すことを確認
+        assert!(
+            INSTALL_PS1.contains("return @($filtered) + @($newHook)"),
+            "Update-HookArray should return array"
+        );
+
+        // 各hookの設定が@()で囲まれていることを確認
+        assert!(
+            INSTALL_PS1.contains(r#"$ExistingSettings["hooks"]["Stop"] = @(Update-HookArray"#),
+            "Stop hook assignment should wrap result in @()"
+        );
+        assert!(
+            INSTALL_PS1.contains(
+                r#"$ExistingSettings["hooks"]["PermissionRequest"] = @(Update-HookArray"#
+            ),
+            "PermissionRequest hook assignment should wrap result in @()"
+        );
+        assert!(
+            INSTALL_PS1.contains(
+                r#"$ExistingSettings["hooks"]["Notification"] = @(Update-HookArray"#
+            ),
+            "Notification hook assignment should wrap result in @()"
+        );
+    }
+
+    /// PowerShellスクリプトテンプレートのプレースホルダーが存在することを確認
+    #[test]
+    fn test_templates_have_placeholders() {
+        // Linux/WSL templates
+        assert!(ON_STOP_SH.contains("__HOST__"));
+        assert!(ON_STOP_SH.contains("__PORT__"));
+        assert!(ON_PERMISSION_REQUEST_SH.contains("__HOST__"));
+        assert!(ON_NOTIFICATION_SH.contains("__HOST__"));
+        assert!(STATUSLINE_SH.contains("__HOST__"));
+        assert!(INSTALL_SH.contains("__HOST__"));
+
+        // Windows templates
+        assert!(ON_STOP_PS1.contains("__HOST__"));
+        assert!(ON_STOP_PS1.contains("__PORT__"));
+        assert!(ON_PERMISSION_REQUEST_PS1.contains("__HOST__"));
+        assert!(ON_NOTIFICATION_PS1.contains("__HOST__"));
+        assert!(STATUSLINE_PS1.contains("__HOST__"));
+        assert!(INSTALL_PS1.contains("__HOST__"));
+    }
+
+    /// PowerShellスクリプトがConvertTo-Jsonを使用していることを確認
+    #[test]
+    fn test_powershell_scripts_use_convertto_json() {
+        // 各スクリプトがConvertTo-Jsonを使用してJSONを生成していることを確認
+        // これにより、バックスラッシュなどが正しくエスケープされる
+        assert!(
+            ON_STOP_PS1.contains("ConvertTo-Json"),
+            "on-stop.ps1 should use ConvertTo-Json for proper escaping"
+        );
+        assert!(
+            ON_PERMISSION_REQUEST_PS1.contains("ConvertTo-Json"),
+            "on-permission-request.ps1 should use ConvertTo-Json"
+        );
+        assert!(
+            ON_NOTIFICATION_PS1.contains("ConvertTo-Json"),
+            "on-notification.ps1 should use ConvertTo-Json"
+        );
+        assert!(
+            STATUSLINE_PS1.contains("ConvertTo-Json"),
+            "statusline.ps1 should use ConvertTo-Json"
+        );
+    }
+}
