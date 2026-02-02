@@ -9,8 +9,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    webview::WebviewWindowBuilder,
-    App, AppHandle, Manager, WebviewUrl,
+    App, AppHandle, Emitter, Manager,
 };
 use tracing::{debug, info, warn};
 
@@ -74,10 +73,10 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
     match event.id().as_ref() {
         menu_ids::SETTINGS => {
-            open_settings_window(app);
+            show_main_window_with_tab(app, "settings");
         }
         menu_ids::EXPORT => {
-            open_export_window(app);
+            show_main_window_with_tab(app, "export");
         }
         menu_ids::QUIT => {
             info!("Quit requested from tray menu");
@@ -87,59 +86,21 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     }
 }
 
-/// Open the settings window
-fn open_settings_window(app: &AppHandle) {
-    // Check if settings window already exists
-    if let Some(window) = app.get_webview_window("settings") {
+/// メインウィンドウを表示し、指定したタブに切り替える
+fn show_main_window_with_tab(app: &AppHandle, tab: &str) {
+    info!("Opening main window with tab: {}", tab);
+
+    // メインウィンドウを表示
+    if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
-        return;
-    }
 
-    // Create new settings window
-    info!("Opening settings window...");
-    match WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("通知設定 - Claude Code Notify")
-        .inner_size(450.0, 500.0)
-        .resizable(false)
-        .center()
-        .build()
-    {
-        Ok(window) => {
-            let _ = window.show();
-            let _ = window.set_focus();
+        // フロントエンドにタブ切り替えイベントを送信
+        if let Err(e) = app.emit("switch-tab", tab) {
+            warn!("Failed to emit switch-tab event: {}", e);
         }
-        Err(e) => {
-            warn!("Failed to create settings window: {}", e);
-        }
-    }
-}
-
-/// Open the export configuration window
-fn open_export_window(app: &AppHandle) {
-    // Check if export window already exists
-    if let Some(window) = app.get_webview_window("export") {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
-    }
-
-    // Create new export window
-    info!("Opening export configuration window...");
-    match WebviewWindowBuilder::new(app, "export", WebviewUrl::App("export.html".into()))
-        .title("設定エクスポート - Claude Code Notify")
-        .inner_size(500.0, 550.0)
-        .resizable(false)
-        .center()
-        .build()
-    {
-        Ok(window) => {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-        Err(e) => {
-            warn!("Failed to create export window: {}", e);
-        }
+    } else {
+        warn!("Main window not found");
     }
 }
 

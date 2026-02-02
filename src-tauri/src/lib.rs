@@ -7,6 +7,7 @@ mod audio;
 mod broker;
 mod client;
 mod export;
+mod notification_history;
 mod notification_state;
 mod settings;
 mod state;
@@ -17,12 +18,13 @@ mod tray_flash;
 
 use broker::MqttBroker;
 use client::{topics, MqttMessage};
+use notification_history::{NotificationEventType, NotificationHistoryEntry, NotificationHistoryManager};
 use notification_state::NotificationState;
 use serde::{Deserialize, Serialize};
 use settings::NotificationSettings;
 use state::{SessionManager, SessionNameManager, StatusPayload};
 use std::sync::{Arc, RwLock};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -239,6 +241,48 @@ fn detect_ip() -> Result<String, String> {
     export::detect_local_ip().map_err(|e| e.to_string())
 }
 
+// ===== 通知履歴コマンド =====
+
+#[tauri::command]
+fn get_notification_history(
+    filter_session: Option<String>,
+    history_manager: tauri::State<'_, Arc<NotificationHistoryManager>>,
+) -> Vec<NotificationHistoryEntry> {
+    history_manager.get_entries(filter_session.as_deref())
+}
+
+#[tauri::command]
+fn mark_notification_read(
+    id: u64,
+    app: tauri::AppHandle,
+    history_manager: tauri::State<'_, Arc<NotificationHistoryManager>>,
+) -> Result<(), String> {
+    history_manager.mark_as_read(&app, id)
+}
+
+#[tauri::command]
+fn mark_all_notifications_read(
+    app: tauri::AppHandle,
+    history_manager: tauri::State<'_, Arc<NotificationHistoryManager>>,
+) -> Result<(), String> {
+    history_manager.mark_all_as_read(&app)
+}
+
+#[tauri::command]
+fn clear_notification_history(
+    app: tauri::AppHandle,
+    history_manager: tauri::State<'_, Arc<NotificationHistoryManager>>,
+) -> Result<(), String> {
+    history_manager.clear(&app)
+}
+
+#[tauri::command]
+fn get_unread_count(
+    history_manager: tauri::State<'_, Arc<NotificationHistoryManager>>,
+) -> usize {
+    history_manager.get_unread_count()
+}
+
 #[tauri::command]
 fn generate_config_zip(host: String, port: u16) -> Result<Vec<u8>, String> {
     let config = export::ExportConfig {
@@ -292,6 +336,7 @@ fn start_message_handler(
     session_manager: Arc<SessionManager>,
     session_name_manager: Arc<SessionNameManager>,
     notification_manager: Arc<NotificationManager>,
+    history_manager: Arc<NotificationHistoryManager>,
 ) {
     // Wait for broker to start
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -308,7 +353,7 @@ fn start_message_handler(
 
         rt.block_on(async move {
             while let Some(msg) = rx.recv().await {
-                handle_mqtt_message(&app_handle, &session_manager, &session_name_manager, &notification_manager, msg);
+                handle_mqtt_message(&app_handle, &session_manager, &session_name_manager, &notification_manager, &history_manager, msg);
             }
             warn!("MQTT message receiver closed");
         });
@@ -320,6 +365,7 @@ fn handle_mqtt_message(
     session_manager: &Arc<SessionManager>,
     session_name_manager: &Arc<SessionNameManager>,
     notification_manager: &Arc<NotificationManager>,
+    history_manager: &Arc<NotificationHistoryManager>,
     msg: MqttMessage,
 ) {
     info!("Received MQTT message on topic: {}", msg.topic);
@@ -330,6 +376,24 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<StopEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Stop event received for: {}", payload.cwd);
+                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref())
+                            .unwrap_or_else(|| "Claude Code".to_string());
+
+                        // 履歴に追加
+                        if let Err(e) = history_manager.add_entry(
+                            app,
+                            NotificationEventType::Stop,
+                            session_name.clone(),
+                            payload.session_id.clone().unwrap_or_default(),
+                            Some(payload.cwd.clone()),
+                            None,
+                        ) {
+                            warn!("Failed to add history entry: {}", e);
+                        } else {
+                            // フロントエンドに通知
+                            let _ = app.emit("notification-added", ());
+                        }
+
                         show_stop_notification(app, session_name_manager, notification_manager, &payload);
                     }
                     Err(e) => {
@@ -345,6 +409,28 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<PermissionRequestPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Permission request received for: {}", payload.cwd);
+                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref())
+                            .unwrap_or_else(|| "Claude Code".to_string());
+
+                        // ツール名を取得
+                        let content = payload.content.tool_name.clone()
+                            .or_else(|| payload.content.raw.clone());
+
+                        // 履歴に追加
+                        if let Err(e) = history_manager.add_entry(
+                            app,
+                            NotificationEventType::PermissionRequest,
+                            session_name.clone(),
+                            payload.session_id.clone().unwrap_or_default(),
+                            Some(payload.cwd.clone()),
+                            content,
+                        ) {
+                            warn!("Failed to add history entry: {}", e);
+                        } else {
+                            // フロントエンドに通知
+                            let _ = app.emit("notification-added", ());
+                        }
+
                         show_permission_request_notification(app, session_name_manager, notification_manager, &payload);
                     }
                     Err(e) => {
@@ -359,6 +445,29 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<NotificationEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Notification event received for: {}", payload.cwd);
+                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref())
+                            .unwrap_or_else(|| "Claude Code".to_string());
+
+                        // メッセージを取得
+                        let content = payload.content.message.clone()
+                            .or_else(|| payload.content.title.clone())
+                            .or_else(|| payload.content.raw.clone());
+
+                        // 履歴に追加
+                        if let Err(e) = history_manager.add_entry(
+                            app,
+                            NotificationEventType::Notification,
+                            session_name.clone(),
+                            payload.session_id.clone().unwrap_or_default(),
+                            Some(payload.cwd.clone()),
+                            content,
+                        ) {
+                            warn!("Failed to add history entry: {}", e);
+                        } else {
+                            // フロントエンドに通知
+                            let _ = app.emit("notification-added", ());
+                        }
+
                         show_notification_event(app, session_name_manager, notification_manager, &payload);
                     }
                     Err(e) => {
@@ -728,11 +837,18 @@ pub fn run() {
             // Create NotificationManager
             let notification_manager = Arc::new(NotificationManager::new(app.handle()));
 
-            // Store NotificationManager in app state for access from window events
+            // Create NotificationHistoryManager and load existing history
+            let history_manager = Arc::new(NotificationHistoryManager::new());
+            if let Err(e) = history_manager.load(app.handle()) {
+                warn!("Failed to load notification history: {}", e);
+            }
+
+            // Store managers in app state for access from window events and commands
             app.manage(notification_manager.clone());
+            app.manage(history_manager.clone());
 
             let app_handle = app.handle().clone();
-            start_message_handler(app_handle, session_manager.clone(), session_name_manager.clone(), notification_manager);
+            start_message_handler(app_handle, session_manager.clone(), session_name_manager.clone(), notification_manager, history_manager);
 
             info!("Application setup complete");
             Ok(())
@@ -744,7 +860,12 @@ pub fn run() {
             generate_config_zip_v2,
             settings::get_settings,
             settings::save_settings_command,
-            audio::play_test_sound
+            audio::play_test_sound,
+            get_notification_history,
+            mark_notification_read,
+            mark_all_notifications_read,
+            clear_notification_history,
+            get_unread_count
         ])
         .on_window_event(|window, event| {
             match event {

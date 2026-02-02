@@ -14,63 +14,271 @@
     <div class="pixel-grid"></div>
 
     <main class="dashboard">
-        <header class="dashboard-header">
-            <div class="icon-wrapper">
-                <div class="pixel-icon">
+        <!-- コンパクトヘッダー -->
+        <header class="dashboard-header compact">
+            <div class="header-row">
+                <div class="pixel-icon small">
                     <span class="exclaim">!</span>
                 </div>
+                <div class="header-text">
+                    <h1>Claude Code Notify</h1>
+                    <p class="version" id="app-version"></p>
+                </div>
             </div>
-            <h1>Claude Code Notify</h1>
-            <p class="version" id="app-version"></p>
         </header>
 
-        <section class="status-card">
-            <div class="status-indicator" id="broker-status">
-                <span class="status-dot"></span>
-                <span class="status-text">接続確認中...</span>
-            </div>
-            <div class="status-detail">
-                <span class="label">MQTT Broker</span>
-                <span class="value">localhost:1883</span>
-            </div>
-        </section>
-
-        <section class="quick-actions">
-            <button type="button" class="action-btn" id="open-export">
-                <span class="action-icon">↗</span>
-                <span class="action-text">設定エクスポート</span>
+        <!-- タブナビゲーション -->
+        <nav class="tab-nav">
+            <button type="button" class="tab-btn active" data-tab="home">
+                <span class="tab-icon">🏠</span>
+                <span class="tab-label">ホーム</span>
             </button>
-        </section>
+            <button type="button" class="tab-btn" data-tab="history">
+                <span class="tab-icon">📋</span>
+                <span class="tab-label">履歴</span>
+                <span class="tab-badge hidden" id="unread-badge">0</span>
+            </button>
+            <button type="button" class="tab-btn" data-tab="settings">
+                <span class="tab-icon">⚙</span>
+                <span class="tab-label">設定</span>
+            </button>
+            <button type="button" class="tab-btn" data-tab="export">
+                <span class="tab-icon">↗</span>
+                <span class="tab-label">出力</span>
+            </button>
+        </nav>
 
-        <section class="guide-section">
-            <div class="section-header">
-                <span class="pixel-marker"></span>
-                <h2>セットアップ</h2>
+        <!-- タブコンテンツ -->
+        <div class="tab-contents">
+            <!-- ホームタブ -->
+            <div class="tab-content active" id="tab-home">
+                <section class="status-card">
+                    <div class="status-indicator" id="broker-status">
+                        <span class="status-dot"></span>
+                        <span class="status-text">接続確認中...</span>
+                    </div>
+                    <div class="status-detail">
+                        <span class="label">MQTT Broker</span>
+                        <span class="value">localhost:1883</span>
+                    </div>
+                </section>
+
+                <section class="guide-section">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>セットアップ</h2>
+                    </div>
+                    <ol class="setup-steps">
+                        <li class="step">
+                            <span class="step-num">1</span>
+                            <div class="step-content">
+                                <span class="step-title">設定をエクスポート</span>
+                                <span class="step-desc">「出力」タブからZIPファイルを保存</span>
+                            </div>
+                        </li>
+                        <li class="step">
+                            <span class="step-num">2</span>
+                            <div class="step-content">
+                                <span class="step-title">WSL/Linuxで実行</span>
+                                <span class="step-desc">install.shでClaude Codeに連携</span>
+                            </div>
+                        </li>
+                        <li class="step">
+                            <span class="step-num">3</span>
+                            <div class="step-content">
+                                <span class="step-title">通知を受け取る</span>
+                                <span class="step-desc">タスク完了時にデスクトップ通知</span>
+                            </div>
+                        </li>
+                    </ol>
+                </section>
             </div>
-            <ol class="setup-steps">
-                <li class="step" style="animation-delay: 0.1s">
-                    <span class="step-num">1</span>
-                    <div class="step-content">
-                        <span class="step-title">設定をエクスポート</span>
-                        <span class="step-desc">上のボタンからZIPファイルを保存</span>
+
+            <!-- 履歴タブ -->
+            <div class="tab-content" id="tab-history">
+                <section class="history-panel">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>通知履歴</h2>
                     </div>
-                </li>
-                <li class="step" style="animation-delay: 0.2s">
-                    <span class="step-num">2</span>
-                    <div class="step-content">
-                        <span class="step-title">WSL/Linuxで実行</span>
-                        <span class="step-desc">install.shでClaude Codeに連携</span>
+                    <div class="history-controls">
+                        <div class="select-wrapper">
+                            <select id="session-filter" class="session-filter">
+                                <option value="">すべて</option>
+                            </select>
+                            <span class="select-arrow">▼</span>
+                        </div>
+                        <div class="history-actions">
+                            <button type="button" class="icon-btn" id="mark-all-read" title="すべて既読">
+                                <span>✓</span>
+                            </button>
+                            <button type="button" class="icon-btn" id="clear-history" title="クリア">
+                                <span>✕</span>
+                            </button>
+                        </div>
                     </div>
-                </li>
-                <li class="step" style="animation-delay: 0.3s">
-                    <span class="step-num">3</span>
-                    <div class="step-content">
-                        <span class="step-title">通知を受け取る</span>
-                        <span class="step-desc">タスク完了時にデスクトップ通知</span>
+                    <div class="history-list" id="history-list">
+                        <!-- 動的に追加 -->
                     </div>
-                </li>
-            </ol>
-        </section>
+                    <div class="history-empty" id="history-empty">
+                        <span class="empty-icon">📭</span>
+                        <p>通知はありません</p>
+                    </div>
+                </section>
+            </div>
+
+            <!-- 設定タブ -->
+            <div class="tab-content" id="tab-settings">
+                <section class="settings-card">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>通知方法</h2>
+                    </div>
+
+                    <div class="settings-list">
+                        <label class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-title">Windows通知バー</span>
+                                <span class="setting-desc">デスクトップ右下にトースト通知を表示</span>
+                            </div>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="toast-enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+
+                        <label class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-title">通知音</span>
+                                <span class="setting-desc">通知時に音を鳴らす</span>
+                            </div>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="sound-enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+
+                        <label class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-title">タスクバー点滅</span>
+                                <span class="setting-desc">タスクバーボタンを点滅させる</span>
+                            </div>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="flash-enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+
+                        <label class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-title">未読バッジ</span>
+                                <span class="setting-desc">タスクバーに未確認数を表示</span>
+                            </div>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="badge-enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+
+                        <label class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-title">トレイアイコン点滅</span>
+                                <span class="setting-desc">最小化時にトレイアイコンを点滅</span>
+                            </div>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="tray-flash-enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                    </div>
+                </section>
+
+                <section class="settings-card">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>音量</h2>
+                    </div>
+
+                    <div class="volume-control">
+                        <div class="volume-slider-container">
+                            <span class="volume-icon low">🔈</span>
+                            <input type="range" id="volume" min="0" max="100" value="80" class="volume-slider">
+                            <span class="volume-icon high">🔊</span>
+                        </div>
+                        <div class="volume-value"><span id="volume-display">80</span>%</div>
+                    </div>
+
+                    <button type="button" class="test-btn" id="test-sound">
+                        <span class="test-icon">▶</span>
+                        <span class="test-text">テスト再生</span>
+                    </button>
+                </section>
+
+                <div class="settings-footer">
+                    <button type="button" class="save-btn" id="save-btn">
+                        設定を保存
+                    </button>
+                    <p class="save-status" id="save-status"></p>
+                </div>
+            </div>
+
+            <!-- エクスポートタブ -->
+            <div class="tab-content" id="tab-export">
+                <section class="config-section">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>接続設定</h2>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="host">
+                            <span class="label-icon">▶</span>
+                            Windows PCのIPアドレス
+                        </label>
+                        <div class="input-with-button">
+                            <input type="text" id="host" placeholder="192.168.x.x">
+                            <button type="button" id="detect-ip" class="btn-secondary">
+                                <span class="btn-text">自動検出</span>
+                                <span class="btn-icon">⟳</span>
+                            </button>
+                        </div>
+                        <small class="hint">Claude Code側からアクセスできるIPアドレス</small>
+                        <div id="ip-status" class="ip-status hidden"></div>
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>プラットフォーム選択</h2>
+                    </div>
+                    <p class="platform-hint">
+                        Claude Codeを実行している環境を選択
+                    </p>
+
+                    <div class="platform-buttons">
+                        <button type="button" id="export-linux-btn" class="btn-primary btn-linux">
+                            <span class="btn-content">
+                                <span class="export-icon">🐧</span>
+                                Linux / WSL
+                            </span>
+                        </button>
+                        <button type="button" id="export-windows-btn" class="btn-primary btn-windows">
+                            <span class="btn-content">
+                                <span class="export-icon">🪟</span>
+                                Windows
+                            </span>
+                        </button>
+                    </div>
+                    <p class="platform-description">
+                        <strong>Linux/WSL:</strong> mosquitto_pub + jq 必要<br>
+                        <strong>Windows:</strong> 追加不要（同梱）
+                    </p>
+                </section>
+
+                <div id="export-status" class="status hidden"></div>
+            </div>
+        </div>
 
         <footer class="dashboard-footer">
             <div class="pixel-line"></div>

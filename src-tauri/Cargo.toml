@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-notify"
-version = "0.2.0"
+version = "0.3.0"
 description = "Claude Code Notification System"
 authors = ["you"]
 edition = "2021"
@@ -48,6 +48,9 @@ local-ip-address = "0.6"
 
 # Random name generation
 rand = "0.9"
+
+# Date/time handling
+chrono = { version = "0.4", features = ["serde"] }
 
 # Settings storage
 tauri-plugin-store = "2"
