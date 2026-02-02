@@ -153,19 +153,10 @@ fn handle_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
             debug!("Tray icon left clicked");
             let app = tray.app_handle();
 
-            // Reset notification state when tray is clicked
+            // Reset notification state when tray is clicked (without opening window)
             if let Some(notification_manager) = app.try_state::<Arc<NotificationManager>>() {
                 notification_manager.reset(app);
                 info!("Notification state reset on tray click");
-            }
-
-            if let Some(window) = app.get_webview_window("main") {
-                if window.is_visible().unwrap_or(false) {
-                    let _ = window.hide();
-                } else {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
             }
         }
         TrayIconEvent::DoubleClick {
