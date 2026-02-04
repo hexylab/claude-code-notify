@@ -391,7 +391,7 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<StopEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Stop event received for: {}", payload.cwd);
-                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref())
+                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref(), &payload.cwd)
                             .unwrap_or_else(|| "Claude Code".to_string());
 
                         // 履歴に追加
@@ -424,7 +424,7 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<PermissionRequestPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Permission request received for: {}", payload.cwd);
-                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref())
+                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref(), &payload.cwd)
                             .unwrap_or_else(|| "Claude Code".to_string());
 
                         // ツール名を取得
@@ -460,7 +460,7 @@ fn handle_mqtt_message(
                 match serde_json::from_str::<NotificationEventPayload>(payload_str) {
                     Ok(payload) => {
                         info!("Notification event received for: {}", payload.cwd);
-                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref())
+                        let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref(), &payload.cwd)
                             .unwrap_or_else(|| "Claude Code".to_string());
 
                         // メッセージを取得
@@ -535,6 +535,7 @@ fn handle_mqtt_message(
 }
 
 /// Extract project name from path
+#[allow(dead_code)]
 fn extract_project_name(cwd: &str) -> &str {
     std::path::Path::new(cwd)
         .file_name()
@@ -542,9 +543,9 @@ fn extract_project_name(cwd: &str) -> &str {
         .unwrap_or(cwd)
 }
 
-/// Resolve session name from session_id using SessionNameManager
-fn resolve_session_name(session_name_manager: &SessionNameManager, session_id: Option<&str>) -> Option<String> {
-    session_id.map(|id| session_name_manager.get_or_create_name(id))
+/// Resolve session name from session_id and cwd using SessionNameManager
+fn resolve_session_name(session_name_manager: &SessionNameManager, session_id: Option<&str>, cwd: &str) -> Option<String> {
+    session_id.map(|id| session_name_manager.get_or_create_name(id, cwd))
 }
 
 /// Show notification for stop event
@@ -554,14 +555,12 @@ fn show_stop_notification(
     notification_manager: &NotificationManager,
     payload: &StopEventPayload,
 ) {
-    let project = extract_project_name(&payload.cwd);
-
-    // Resolve session name from session_id (SMS-style: sender name as title)
-    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
+    // Resolve session name from session_id (SMS-style: sender name as title, includes project name)
+    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref(), &payload.cwd);
     let title = session_name.unwrap_or_else(|| "Claude Code".to_string());
 
-    // SMS-style body: event type + project name
-    let body = format!("✅ タスクが完了しました\n📁 {}", project);
+    // SMS-style body: event type only (project name is in the title)
+    let body = "✅ タスクが完了しました".to_string();
 
     info!("Attempting to show notification: {} - {}", title, body);
 
@@ -576,10 +575,8 @@ fn show_permission_request_notification(
     notification_manager: &NotificationManager,
     payload: &PermissionRequestPayload,
 ) {
-    let project = extract_project_name(&payload.cwd);
-
-    // Resolve session name from session_id
-    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
+    // Resolve session name from session_id (includes project name)
+    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref(), &payload.cwd);
 
     // Check if this is an AskUserQuestion (question from Claude, not a permission request)
     let is_ask_user_question = payload.content.tool_name.as_deref() == Some("AskUserQuestion")
@@ -592,10 +589,10 @@ fn show_permission_request_notification(
 
     if is_ask_user_question {
         // Show as a question notification
-        show_ask_user_question_notification(app, notification_manager, payload, project, session_name.as_deref());
+        show_ask_user_question_notification(app, notification_manager, payload, session_name.as_deref());
     } else {
         // Show as a permission request notification
-        show_tool_permission_notification(app, notification_manager, payload, project, session_name.as_deref());
+        show_tool_permission_notification(app, notification_manager, payload, session_name.as_deref());
     }
 }
 
@@ -604,18 +601,17 @@ fn show_ask_user_question_notification(
     app: &tauri::AppHandle,
     notification_manager: &NotificationManager,
     payload: &PermissionRequestPayload,
-    project: &str,
     session_name: Option<&str>,
 ) {
-    // SMS-style: sender name as title
+    // SMS-style: sender name as title (now includes project name)
     let title = session_name.unwrap_or("Claude Code").to_string();
 
     // Try to extract the question text
     let question_text = extract_question_text(&payload.content)
         .unwrap_or_else(|| "質問が来ています".to_string());
 
-    // SMS-style body: event type + question
-    let body = format!("❓ 質問があります\n{}\n📁 {}", question_text, project);
+    // SMS-style body: event type + question (project name is in the title)
+    let body = format!("❓ 質問があります\n{}", question_text);
 
     info!("Attempting to show AskUserQuestion notification: {} - {}", title, body);
 
@@ -661,10 +657,9 @@ fn show_tool_permission_notification(
     app: &tauri::AppHandle,
     notification_manager: &NotificationManager,
     payload: &PermissionRequestPayload,
-    project: &str,
     session_name: Option<&str>,
 ) {
-    // SMS-style: sender name as title
+    // SMS-style: sender name as title (now includes project name)
     let title = session_name.unwrap_or("Claude Code").to_string();
 
     // Try to extract useful info from content
@@ -711,8 +706,8 @@ fn show_tool_permission_notification(
         "ツールの実行許可が必要です".to_string()
     };
 
-    // SMS-style body: event type + tool info + project
-    let body = format!("⚠️ 承認が必要です\n{}\n📁 {}", tool_info, project);
+    // SMS-style body: event type + tool info (project name is in the title)
+    let body = format!("⚠️ 承認が必要です\n{}", tool_info);
 
     info!("Attempting to show notification: {} - {}", title, body);
 
@@ -734,10 +729,8 @@ fn show_notification_event(
     notification_manager: &NotificationManager,
     payload: &NotificationEventPayload,
 ) {
-    let project = extract_project_name(&payload.cwd);
-
-    // Resolve session name from session_id (SMS-style: sender name as title)
-    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref());
+    // Resolve session name from session_id (SMS-style: sender name as title, includes project name)
+    let session_name = resolve_session_name(session_name_manager, payload.session_id.as_deref(), &payload.cwd);
     let title = session_name.unwrap_or_else(|| "Claude Code".to_string());
 
     // Try to extract message from content
@@ -767,8 +760,8 @@ fn show_notification_event(
         "入力を待っています".to_string()
     };
 
-    // SMS-style body: event type + message + project
-    let body = format!("💬 入力が必要です\n{}\n📁 {}", message, project);
+    // SMS-style body: event type + message (project name is now in the title)
+    let body = format!("💬 入力が必要です\n{}", message);
 
     info!("Attempting to show notification: {} - {}", title, body);
 

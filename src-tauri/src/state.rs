@@ -4,7 +4,6 @@
 //! tracking active sessions, their status, and aggregated metrics.
 //! Also handles session ID to display name mapping.
 
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -219,83 +218,20 @@ impl SessionManager {
 // Session Name Manager
 // =============================================================================
 
-/// Human names in Katakana for session identification (150 names)
-const SESSION_NAMES: &[&str] = &[
-    // A
-    "アリス", "アンナ", "アヤ", "アキ", "アオイ",
-    "アレックス", "アンディ", "アーロン", "アダム", "エイミー",
-    // B
-    "ベン", "ボブ", "ブレイク", "ベラ", "ブルーノ",
-    // C
-    "チャーリー", "クロエ", "カール", "キャシー", "クリス",
-    // D
-    "ダン", "ダイアナ", "デイビッド", "ドリー", "ディラン",
-    // E
-    "エマ", "エミリー", "イーサン", "エリック", "エヴァ",
-    // F
-    "フィン", "フローラ", "フランク", "フェリックス", "フィオナ",
-    // G
-    "ジョージ", "グレース", "ガブリエル", "ジーナ", "ゴードン",
-    // H
-    "ハナ", "ヒロ", "ヘンリー", "ホリー", "ハルカ",
-    // I
-    "アイビー", "イアン", "イザベル", "イヴ", "イサム",
-    // J
-    "ジャック", "ジェーン", "ジェイク", "ジュリア", "ジョン",
-    // K
-    "ケイト", "カイ", "ケン", "キム", "カレン",
-    // L
-    "ルナ", "リオ", "レオ", "リリー", "ルーカス",
-    // M
-    "マヤ", "ミア", "マックス", "マイク", "モリー",
-    // N
-    "ノア", "ニナ", "ニック", "ナオミ", "ネイト",
-    // O
-    "オリバー", "オリビア", "オスカー", "オーウェン", "オパール",
-    // P
-    "ポール", "ペニー", "ピーター", "パム", "パトリック",
-    // Q
-    "クイン",
-    // R
-    "レイ", "ローズ", "ライアン", "レベッカ", "レオナ",
-    // S
-    "サラ", "ソフィア", "サム", "スカイ", "ショーン",
-    "シオン", "セナ", "ソラ", "サクラ", "シュン",
-    // T
-    "トム", "ティナ", "タイラー", "テス", "トビー",
-    // U
-    "ウナ", "ウーゴ",
-    // V
-    "ヴィクター", "ヴィオラ", "ヴィンス", "ヴェラ", "ヴァル",
-    // W
-    "ウィル", "ウェンディ", "ワイアット", "ウィロー", "ウェイド",
-    // X
-    "ザビエル", "シアラ",
-    // Y
-    "ユキ", "ユウ", "ユナ", "ヨシ", "ユリ",
-    // Z
-    "ザック", "ゾーイ", "ゼン", "ザラ", "ジオ",
-    // Additional names
-    "アンジェラ", "ブライアン", "キャロル", "デレク", "エレナ",
-    "フレッド", "グロリア", "ハロルド", "アイリス", "ジェシカ",
-    "ケビン", "ローラ", "マーク", "ナンシー", "オスカル",
-    "パメラ", "ロジャー", "ステラ", "テリー", "ウルスラ",
-    "ビンセント", "ワンダ", "ザンダー", "イヴォンヌ", "ザカリー",
-    "リナ", "タケシ", "ミサキ", "ケンジ", "アスカ",
-    "リョウ", "マリコ", "ユウタ", "エリカ", "ダイキ",
-];
+/// Maximum length for project name display
+const MAX_PROJECT_NAME_LENGTH: usize = 30;
 
-/// Session name manager - maps session IDs to human-readable names
+/// Session name manager - maps session IDs to project-based names
 ///
-/// This manager assigns random names from a pool of 150 Katakana names
-/// to session IDs. Names are assigned on first encounter and persisted for the session lifetime.
-/// When all names are in use, the oldest session's name is recycled.
+/// This manager creates display names based on the project directory (cwd).
+/// Format: "project-name (n)" where n is a sequential number starting from 1.
+/// Multiple sessions in the same project get sequential numbers.
 #[derive(Debug, Clone)]
 pub struct SessionNameManager {
     /// Map from session_id to display name
     names: Arc<RwLock<HashMap<String, String>>>,
-    /// Set of currently used names (to avoid duplicates)
-    used_names: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Map from project_name to list of session_ids (for sequential numbering)
+    project_sessions: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
 impl Default for SessionNameManager {
@@ -308,15 +244,16 @@ impl SessionNameManager {
     pub fn new() -> Self {
         Self {
             names: Arc::new(RwLock::new(HashMap::new())),
-            used_names: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            project_sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Get or create a display name for a session ID
+    /// Get or create a display name for a session ID based on cwd
     ///
     /// If the session ID already has a name, returns it.
-    /// Otherwise, generates a random unique name and stores it.
-    pub fn get_or_create_name(&self, session_id: &str) -> String {
+    /// Otherwise, creates a name based on the project directory with sequential numbering.
+    /// Format: "project-name (1)", "project-name (2)", etc.
+    pub fn get_or_create_name(&self, session_id: &str, cwd: &str) -> String {
         // Check if name already exists
         {
             let names = self.names.read().expect("Failed to acquire read lock");
@@ -325,55 +262,73 @@ impl SessionNameManager {
             }
         }
 
-        // Generate a new unique name
-        let new_name = self.generate_unique_name();
+        // Extract project name from cwd
+        let project_name = Self::extract_project_name(cwd);
 
-        // Store the new name
-        {
+        // Create new name with sequential number
+        let new_name = {
             let mut names = self.names.write().expect("Failed to acquire write lock");
-            let mut used = self.used_names.write().expect("Failed to acquire write lock");
+            let mut project_sessions = self.project_sessions.write().expect("Failed to acquire write lock");
 
             // Double-check in case another thread added it
             if let Some(name) = names.get(session_id) {
                 return name.clone();
             }
 
-            names.insert(session_id.to_string(), new_name.clone());
-            used.insert(new_name.clone());
-            info!("Assigned name '{}' to session '{}'", new_name, session_id);
-        }
+            // Get or create the session list for this project
+            let sessions = project_sessions.entry(project_name.clone()).or_default();
+
+            // Add this session to the project's session list
+            sessions.push(session_id.to_string());
+
+            // Sequential number is the position in the list (1-indexed)
+            let seq_num = sessions.len();
+
+            // Format: "project-name (n)"
+            let display_name = format!("{} ({})", project_name, seq_num);
+
+            names.insert(session_id.to_string(), display_name.clone());
+            info!("Assigned name '{}' to session '{}'", display_name, session_id);
+
+            display_name
+        };
 
         new_name
     }
 
-    /// Generate a unique random name that hasn't been used yet
-    fn generate_unique_name(&self) -> String {
-        let used = self.used_names.read().expect("Failed to acquire read lock");
-        let mut rng = rand::rng();
+    /// Extract project name from cwd path
+    fn extract_project_name(cwd: &str) -> String {
+        let project_name = std::path::Path::new(cwd)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(cwd);
 
-        // Shuffle names and find an unused one
-        let mut names: Vec<&str> = SESSION_NAMES.to_vec();
-        names.shuffle(&mut rng);
-
-        for name in &names {
-            if !used.contains(*name) {
-                return name.to_string();
-            }
+        // Truncate if too long
+        if project_name.len() > MAX_PROJECT_NAME_LENGTH {
+            format!("{}...", &project_name[..MAX_PROJECT_NAME_LENGTH - 3])
+        } else {
+            project_name.to_string()
         }
-
-        // All names are in use - this should rarely happen with 150 names
-        // Return a random name anyway (will be duplicate but functional)
-        names.first().copied().unwrap_or("アリス").to_string()
     }
 
-    /// Remove a session and free up its name for reuse
+    /// Remove a session and update sequential numbering
     #[allow(dead_code)]
     pub fn remove_session(&self, session_id: &str) {
         let mut names = self.names.write().expect("Failed to acquire write lock");
-        let mut used = self.used_names.write().expect("Failed to acquire write lock");
+        let mut project_sessions = self.project_sessions.write().expect("Failed to acquire write lock");
 
         if let Some(name) = names.remove(session_id) {
-            used.remove(&name);
+            // Find and remove from project_sessions
+            for sessions in project_sessions.values_mut() {
+                if let Some(pos) = sessions.iter().position(|id| id == session_id) {
+                    sessions.remove(pos);
+                    break;
+                }
+            }
+
+            // Clean up empty project entries
+            project_sessions.retain(|_, sessions| !sessions.is_empty());
+
             info!("Removed session '{}' (was '{}')", session_id, name);
         }
     }
@@ -472,42 +427,69 @@ mod tests {
     #[test]
     fn test_session_name_manager_assigns_name() {
         let manager = SessionNameManager::new();
-        let name = manager.get_or_create_name("wsl-12345");
+        let name = manager.get_or_create_name("wsl-12345", "/home/user/my-project");
 
-        // Name should be a single Katakana name from the list
-        assert!(!name.is_empty());
-        assert!(SESSION_NAMES.contains(&name.as_str()));
+        // Name should be "project-name (1)" format
+        assert_eq!(name, "my-project (1)");
     }
 
     #[test]
     fn test_session_name_manager_returns_same_name() {
         let manager = SessionNameManager::new();
-        let name1 = manager.get_or_create_name("session-abc");
-        let name2 = manager.get_or_create_name("session-abc");
+        let name1 = manager.get_or_create_name("session-abc", "/home/user/project");
+        let name2 = manager.get_or_create_name("session-abc", "/home/user/project");
 
         assert_eq!(name1, name2);
     }
 
     #[test]
-    fn test_session_name_manager_unique_names() {
+    fn test_session_name_manager_sequential_numbering() {
         let manager = SessionNameManager::new();
-        let name1 = manager.get_or_create_name("session-1");
-        let name2 = manager.get_or_create_name("session-2");
-        let name3 = manager.get_or_create_name("session-3");
 
-        // All names should be different
-        assert_ne!(name1, name2);
-        assert_ne!(name2, name3);
-        assert_ne!(name1, name3);
+        // Same project, different sessions should get sequential numbers
+        let name1 = manager.get_or_create_name("session-1", "/home/user/my-app");
+        let name2 = manager.get_or_create_name("session-2", "/home/user/my-app");
+        let name3 = manager.get_or_create_name("session-3", "/home/user/my-app");
+
+        assert_eq!(name1, "my-app (1)");
+        assert_eq!(name2, "my-app (2)");
+        assert_eq!(name3, "my-app (3)");
+    }
+
+    #[test]
+    fn test_session_name_manager_different_projects() {
+        let manager = SessionNameManager::new();
+
+        // Different projects should each start from (1)
+        let name1 = manager.get_or_create_name("session-1", "/home/user/project-a");
+        let name2 = manager.get_or_create_name("session-2", "/home/user/project-b");
+        let name3 = manager.get_or_create_name("session-3", "/home/user/project-a");
+
+        assert_eq!(name1, "project-a (1)");
+        assert_eq!(name2, "project-b (1)");
+        assert_eq!(name3, "project-a (2)");
     }
 
     #[test]
     fn test_session_name_manager_remove_session() {
         let manager = SessionNameManager::new();
-        let _name = manager.get_or_create_name("session-to-remove");
+        let _name = manager.get_or_create_name("session-to-remove", "/home/user/test");
 
         assert_eq!(manager.session_count(), 1);
         manager.remove_session("session-to-remove");
         assert_eq!(manager.session_count(), 0);
+    }
+
+    #[test]
+    fn test_session_name_manager_long_project_name() {
+        let manager = SessionNameManager::new();
+        let long_name = "a".repeat(50);
+        let cwd = format!("/home/user/{}", long_name);
+        let name = manager.get_or_create_name("session-1", &cwd);
+
+        // Should be truncated with "..."
+        assert!(name.len() < 50);
+        assert!(name.contains("..."));
+        assert!(name.ends_with(" (1)"));
     }
 }
