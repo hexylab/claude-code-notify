@@ -90,11 +90,8 @@ pub fn get_settings(app: tauri::AppHandle) -> NotificationSettings {
     load_settings(&app)
 }
 
-/// Tauriコマンド: 設定を保存
-#[tauri::command]
-pub fn save_settings_command(app: tauri::AppHandle, settings: NotificationSettings) -> Result<(), String> {
-    save_settings(&app, &settings)
-}
+// save_settings_command は lib.rs に移動
+// NotificationManager のメモリ内設定も同時に更新するため
 
 #[cfg(test)]
 mod tests {

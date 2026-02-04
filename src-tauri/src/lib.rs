@@ -236,6 +236,21 @@ fn get_broker_status(state: tauri::State<'_, std::sync::Mutex<AppState>>) -> boo
         .unwrap_or(false)
 }
 
+/// Tauriコマンド: 設定を保存（NotificationManagerのメモリ内設定も同時に更新）
+#[tauri::command]
+fn save_settings_command(
+    app: tauri::AppHandle,
+    settings: NotificationSettings,
+    notification_manager: tauri::State<'_, Arc<NotificationManager>>,
+) -> Result<(), String> {
+    // ファイルに保存
+    settings::save_settings(&app, &settings)?;
+    // NotificationManager のメモリ内設定を更新
+    notification_manager.update_settings(settings);
+    info!("Settings saved and NotificationManager updated");
+    Ok(())
+}
+
 #[tauri::command]
 fn detect_ip() -> Result<String, String> {
     export::detect_local_ip().map_err(|e| e.to_string())
@@ -859,7 +874,7 @@ pub fn run() {
             generate_config_zip,
             generate_config_zip_v2,
             settings::get_settings,
-            settings::save_settings_command,
+            save_settings_command,
             audio::play_test_sound,
             get_notification_history,
             mark_notification_read,
