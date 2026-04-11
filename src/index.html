@@ -66,28 +66,63 @@
                 <section class="guide-section">
                     <div class="section-header">
                         <span class="pixel-marker"></span>
-                        <h2>セットアップ</h2>
+                        <h2>クイックセットアップ</h2>
+                    </div>
+                    <p class="setup-hint">
+                        Claude Code 実行環境で以下のコマンドを1行実行するだけで連携完了します。
+                    </p>
+
+                    <div class="os-tabs">
+                        <button type="button" class="os-tab active" data-os="linux">Linux / WSL</button>
+                        <button type="button" class="os-tab" data-os="macos">macOS</button>
+                        <button type="button" class="os-tab" data-os="windows">Windows</button>
+                    </div>
+
+                    <div class="install-command-wrapper">
+                        <pre class="install-command" id="install-command">読み込み中...</pre>
+                        <button type="button" class="copy-btn" id="copy-install-btn" title="コピー">
+                            <span class="copy-icon">📋</span>
+                            <span class="copy-text">コピー</span>
+                        </button>
+                    </div>
+                    <p class="install-hint" id="install-hint"></p>
+                    <div id="install-status" class="install-status hidden"></div>
+
+                    <details class="setup-details">
+                        <summary>うまくいかないとき</summary>
+                        <ul class="troubleshoot-list">
+                            <li>Windows ファイアウォールで TCP <strong>1883</strong> と <strong>1884</strong> を許可してください</li>
+                            <li>接続確認: <code id="health-url">http://host:1884/health</code></li>
+                            <li>アンインストール: <code id="uninstall-cmd">-</code></li>
+                        </ul>
+                    </details>
+                </section>
+
+                <section class="guide-section">
+                    <div class="section-header">
+                        <span class="pixel-marker"></span>
+                        <h2>仕組み</h2>
                     </div>
                     <ol class="setup-steps">
                         <li class="step">
                             <span class="step-num">1</span>
                             <div class="step-content">
-                                <span class="step-title">設定をエクスポート</span>
-                                <span class="step-desc">「出力」タブからZIPファイルを保存</span>
+                                <span class="step-title">mqtt-publish を自動取得</span>
+                                <span class="step-desc">このアプリから単一バイナリを HTTP 経由で取得</span>
                             </div>
                         </li>
                         <li class="step">
                             <span class="step-num">2</span>
                             <div class="step-content">
-                                <span class="step-title">WSL/Linuxで実行</span>
-                                <span class="step-desc">install.shでClaude Codeに連携</span>
+                                <span class="step-title">settings.json に1行追加</span>
+                                <span class="step-desc">既存のフックは一切変更しません</span>
                             </div>
                         </li>
                         <li class="step">
                             <span class="step-num">3</span>
                             <div class="step-content">
                                 <span class="step-title">通知を受け取る</span>
-                                <span class="step-desc">タスク完了時にデスクトップ通知</span>
+                                <span class="step-desc">アプリが落ちていても Claude Code はブロックされません</span>
                             </div>
                         </li>
                     </ol>
@@ -224,6 +259,11 @@
 
             <!-- エクスポートタブ -->
             <div class="tab-content" id="tab-export">
+                <div class="legacy-notice">
+                    <strong>上級者向け:</strong> 通常は「ホーム」タブのワンライナーコマンドを使ってください。
+                    このタブは HTTP 経由で接続できない環境向けのオフラインセットアップ用です（ラッパスクリプト方式）。
+                </div>
+
                 <section class="config-section">
                     <div class="section-header">
                         <span class="pixel-marker"></span>

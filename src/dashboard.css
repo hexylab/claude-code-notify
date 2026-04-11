@@ -413,6 +413,169 @@ body {
     color: var(--gray-600);
 }
 
+/* セットアップ (HTTP ワンライナー方式) */
+.setup-hint {
+    font-size: 11px;
+    color: var(--gray-600);
+    margin-bottom: 10px;
+    line-height: 1.5;
+}
+
+.os-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.os-tab {
+    flex: 1;
+    padding: 6px 8px;
+    background: var(--white);
+    border: 2px solid var(--navy);
+    color: var(--navy);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.1s ease;
+}
+
+.os-tab:hover {
+    background: var(--cream);
+}
+
+.os-tab.active {
+    background: var(--navy);
+    color: var(--white);
+}
+
+.install-command-wrapper {
+    position: relative;
+    margin-bottom: 8px;
+}
+
+.install-command {
+    background: var(--navy);
+    color: #9AE6B4;
+    padding: 12px 14px;
+    padding-right: 90px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    border: 2px solid var(--navy);
+    margin: 0;
+    overflow-x: auto;
+    user-select: all;
+}
+
+.copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 6px 10px;
+    background: var(--terracotta);
+    color: var(--white);
+    border: 2px solid var(--white);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: transform 0.1s ease;
+}
+
+.copy-btn:hover {
+    transform: translate(-1px, -1px);
+}
+
+.copy-btn:active {
+    transform: translate(0, 0);
+}
+
+.install-hint {
+    font-size: 10px;
+    color: var(--gray-600);
+    margin-bottom: 8px;
+    line-height: 1.4;
+}
+
+.install-status {
+    font-size: 11px;
+    padding: 6px 10px;
+    border: 2px solid;
+    margin-bottom: 8px;
+}
+
+.install-status.success {
+    background: #C6F6D5;
+    color: #22543D;
+    border-color: #48BB78;
+}
+
+.install-status.error {
+    background: #FED7D7;
+    color: #742A2A;
+    border-color: #F56565;
+}
+
+.install-status.hidden {
+    display: none;
+}
+
+.setup-details {
+    margin-top: 12px;
+    font-size: 11px;
+    border-top: 2px dashed var(--gray-300, #CBD5E0);
+    padding-top: 10px;
+}
+
+.setup-details summary {
+    cursor: pointer;
+    color: var(--gray-600);
+    font-weight: 600;
+    padding: 4px 0;
+}
+
+.setup-details summary:hover {
+    color: var(--navy);
+}
+
+.troubleshoot-list {
+    list-style: disc;
+    padding-left: 20px;
+    margin-top: 8px;
+    color: var(--gray-600);
+    line-height: 1.6;
+}
+
+.troubleshoot-list code {
+    background: var(--cream, #FAF3E7);
+    padding: 1px 6px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 10px;
+    color: var(--navy);
+    word-break: break-all;
+}
+
+/* 上級者向けオフラインタブの注記 */
+.legacy-notice {
+    background: #FEF3C7;
+    border: 2px solid #F59E0B;
+    padding: 10px 12px;
+    font-size: 11px;
+    color: #78350F;
+    line-height: 1.5;
+    margin-bottom: 12px;
+}
+
+.legacy-notice strong {
+    color: #92400E;
+}
+
 /* ===== HISTORY TAB ===== */
 .history-panel {
     background: var(--white);

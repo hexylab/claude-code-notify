@@ -1099,6 +1099,376 @@ PowerShellで手動でスクリプトを実行して通知が届くか確認:
     Test-NetConnection -ComputerName __HOST__ -Port __PORT__
 "#;
 
+// =============================================================================
+// HTTP 配信版（シェルラッパ不要、単一バイナリのみ）
+// =============================================================================
+//
+// 方針:
+//   - Tauri アプリ内蔵の HTTP サーバがインストーラスクリプトと mqtt-publish
+//     バイナリを配信する
+//   - ユーザ操作は `curl http://WIN-IP:1884/install.sh | bash` の 1 行のみ
+//   - ~/.claude/settings.json にはインラインでコマンドを 1 行だけ追加する
+//     （ラッパスクリプト不要）
+//   - アンインストールはコマンド文字列に `.claude-notify/mqtt-publish`
+//     を含むエントリのみを除去する（ユーザ独自のフックには触らない）
+
+/// HTTP インストーラの識別マーカー。settings.json 上でこの文字列を含む
+/// command エントリは「この製品が追加したもの」とみなされる。
+#[allow(dead_code)]
+pub const HTTP_HOOK_MARKER: &str = ".claude-notify/mqtt-publish";
+
+/// HTTP 配信版 install.sh（Linux / WSL / macOS 共通）
+///
+/// プレースホルダー:
+///   __HOST__      : MQTT ブローカーのホスト
+///   __PORT__      : MQTT ブローカーのポート
+///   __HTTP_PORT__ : Tauri アプリの HTTP サーバポート
+pub const INSTALL_SH_HTTP: &str = r####"#!/bin/bash
+# Claude Code Notify - ワンライナーインストーラ
+# 使い方: curl -fsSL http://<host>:<http_port>/install.sh | bash
+
+set -e
+
+HOST="${CLAUDE_NOTIFY_HOST:-__HOST__}"
+MQTT_PORT="${CLAUDE_NOTIFY_MQTT_PORT:-__PORT__}"
+HTTP_PORT="${CLAUDE_NOTIFY_HTTP_PORT:-__HTTP_PORT__}"
+INSTALL_DIR="${HOME}/.claude-notify"
+BIN_PATH="${INSTALL_DIR}/mqtt-publish"
+SETTINGS_FILE="${HOME}/.claude/settings.json"
+MARKER=".claude-notify/mqtt-publish"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${GREEN}Claude Code Notify インストーラ${NC}"
+echo ""
+
+# OS 検出
+UNAME_S=$(uname -s)
+UNAME_M=$(uname -m)
+BIN_NAME=""
+case "$UNAME_S" in
+    Linux)
+        BIN_NAME="mqtt-publish-linux-x64"
+        ;;
+    Darwin)
+        if [ "$UNAME_M" = "arm64" ]; then
+            BIN_NAME="mqtt-publish-macos-arm64"
+        else
+            BIN_NAME="mqtt-publish-macos-x64"
+        fi
+        ;;
+    *)
+        echo -e "${RED}エラー: サポート外の OS ($UNAME_S)${NC}"
+        exit 1
+        ;;
+esac
+
+BIN_URL="http://${HOST}:${HTTP_PORT}/bin/${BIN_NAME}"
+
+echo -e "${YELLOW}mqtt-publish をダウンロード中...${NC}"
+echo "  URL: $BIN_URL"
+mkdir -p "$INSTALL_DIR"
+
+if ! curl -fsSL "$BIN_URL" -o "$BIN_PATH"; then
+    echo -e "${RED}ダウンロードに失敗しました${NC}"
+    echo "確認してください:"
+    echo "  - Windows 側で Claude Code Notify が起動している"
+    echo "  - Windows ファイアウォールで TCP ${HTTP_PORT} が許可されている"
+    echo "  - ネットワーク到達性: curl http://${HOST}:${HTTP_PORT}/health"
+    exit 1
+fi
+chmod +x "$BIN_PATH"
+echo -e "  ${GREEN}OK${NC} $BIN_PATH"
+echo ""
+
+# settings.json をマージ
+echo -e "${YELLOW}Claude Code の設定を更新中...${NC}"
+mkdir -p "$(dirname "$SETTINGS_FILE")"
+
+if [ -f "$SETTINGS_FILE" ]; then
+    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    EXISTING=$(cat "$SETTINGS_FILE")
+else
+    EXISTING="{}"
+fi
+
+STOP_CMD="${BIN_PATH} --event stop --detach -h ${HOST} -p ${MQTT_PORT}"
+PERM_CMD="${BIN_PATH} --event permission-request --detach -h ${HOST} -p ${MQTT_PORT}"
+NOTIF_CMD="${BIN_PATH} --event notification --detach -h ${HOST} -p ${MQTT_PORT}"
+
+if command -v jq >/dev/null 2>&1; then
+    MERGED=$(printf '%s' "$EXISTING" | jq \
+        --arg marker "$MARKER" \
+        --arg stop "$STOP_CMD" \
+        --arg perm "$PERM_CMD" \
+        --arg notif "$NOTIF_CMD" '
+        def strip_ours(arr): [ (arr // [])[] | select((.hooks // []) | any(.command | tostring | contains($marker)) | not) ];
+        def upsert(name; cmd; matcher):
+            .hooks[name] = (strip_ours(.hooks[name]) + [{matcher: matcher, hooks: [{type: "command", command: cmd}]}]);
+        .hooks = (.hooks // {})
+        | upsert("Stop"; $stop; "")
+        | upsert("PermissionRequest"; $perm; "")
+        | upsert("Notification"; $notif; "elicitation_dialog")
+        ')
+elif command -v python3 >/dev/null 2>&1; then
+    PY_CODE='
+import json, sys
+marker, stop_cmd, perm_cmd, notif_cmd = sys.argv[1:5]
+raw = sys.stdin.read().strip()
+data = json.loads(raw) if raw else {}
+hooks = data.setdefault("hooks", {})
+def strip_ours(arr):
+    return [e for e in (arr or []) if not any(marker in (h.get("command", "") or "") for h in (e.get("hooks") or []))]
+def upsert(name, cmd, matcher):
+    hooks[name] = strip_ours(hooks.get(name)) + [{"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]}]
+upsert("Stop", stop_cmd, "")
+upsert("PermissionRequest", perm_cmd, "")
+upsert("Notification", notif_cmd, "elicitation_dialog")
+print(json.dumps(data, indent=2, ensure_ascii=False))
+'
+    MERGED=$(printf '%s' "$EXISTING" | python3 -c "$PY_CODE" "$MARKER" "$STOP_CMD" "$PERM_CMD" "$NOTIF_CMD")
+else
+    echo -e "${RED}エラー: jq または python3 が必要です${NC}"
+    echo "  Ubuntu/Debian: sudo apt install jq"
+    echo "  macOS:         brew install jq"
+    exit 1
+fi
+
+printf '%s\n' "$MERGED" > "$SETTINGS_FILE"
+echo -e "  ${GREEN}OK${NC} $SETTINGS_FILE"
+echo ""
+echo -e "${GREEN}インストール完了！${NC}"
+echo ""
+echo "次の手順:"
+echo "  1. Claude Code を再起動してください"
+echo "  2. タスクが完了すると Windows 側に通知が届きます"
+echo ""
+echo "アンインストール:"
+echo "  curl -fsSL http://${HOST}:${HTTP_PORT}/uninstall.sh | bash"
+"####;
+
+/// HTTP 配信版 uninstall.sh
+pub const UNINSTALL_SH_HTTP: &str = r####"#!/bin/bash
+# Claude Code Notify - アンインストーラ
+# 使い方: curl -fsSL http://<host>:<http_port>/uninstall.sh | bash
+
+set -e
+
+INSTALL_DIR="${HOME}/.claude-notify"
+SETTINGS_FILE="${HOME}/.claude/settings.json"
+MARKER=".claude-notify/mqtt-publish"
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${YELLOW}Claude Code Notify をアンインストール中...${NC}"
+
+if [ -f "$SETTINGS_FILE" ]; then
+    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    EXISTING=$(cat "$SETTINGS_FILE")
+
+    if command -v jq >/dev/null 2>&1; then
+        CLEANED=$(printf '%s' "$EXISTING" | jq --arg marker "$MARKER" '
+            def strip_ours(arr): [ (arr // [])[] | select((.hooks // []) | any(.command | tostring | contains($marker)) | not) ];
+            if .hooks then
+                .hooks.Stop = strip_ours(.hooks.Stop) |
+                .hooks.PermissionRequest = strip_ours(.hooks.PermissionRequest) |
+                .hooks.Notification = strip_ours(.hooks.Notification)
+            else . end
+        ')
+    elif command -v python3 >/dev/null 2>&1; then
+        PY_CODE='
+import json, sys
+marker = sys.argv[1]
+raw = sys.stdin.read().strip()
+data = json.loads(raw) if raw else {}
+hooks = data.get("hooks") or {}
+def strip_ours(arr):
+    return [e for e in (arr or []) if not any(marker in (h.get("command", "") or "") for h in (e.get("hooks") or []))]
+for name in ("Stop", "PermissionRequest", "Notification"):
+    if name in hooks:
+        hooks[name] = strip_ours(hooks[name])
+print(json.dumps(data, indent=2, ensure_ascii=False))
+'
+        CLEANED=$(printf '%s' "$EXISTING" | python3 -c "$PY_CODE" "$MARKER")
+    else
+        echo "jq または python3 が必要です"
+        exit 1
+    fi
+
+    printf '%s\n' "$CLEANED" > "$SETTINGS_FILE"
+    echo -e "  ${GREEN}OK${NC} settings.json から該当フックを削除"
+fi
+
+if [ -d "$INSTALL_DIR" ]; then
+    rm -rf "$INSTALL_DIR"
+    echo -e "  ${GREEN}OK${NC} $INSTALL_DIR を削除"
+fi
+
+echo -e "${GREEN}アンインストール完了${NC}"
+"####;
+
+/// HTTP 配信版 install.ps1（Windows）
+pub const INSTALL_PS1_HTTP: &str = r####"#Requires -Version 5.1
+# Claude Code Notify - Windows ワンライナーインストーラ
+# 使い方: iwr -useb http://<host>:<http_port>/install.ps1 | iex
+
+$ErrorActionPreference = "Stop"
+
+$NotifyHost = if ($env:CLAUDE_NOTIFY_HOST) { $env:CLAUDE_NOTIFY_HOST } else { "__HOST__" }
+$MqttPort   = if ($env:CLAUDE_NOTIFY_MQTT_PORT) { $env:CLAUDE_NOTIFY_MQTT_PORT } else { "__PORT__" }
+$HttpPort   = if ($env:CLAUDE_NOTIFY_HTTP_PORT) { $env:CLAUDE_NOTIFY_HTTP_PORT } else { "__HTTP_PORT__" }
+$InstallDir = "$env:USERPROFILE\.claude-notify"
+$BinPath    = "$InstallDir\mqtt-publish.exe"
+$SettingsFile = "$env:USERPROFILE\.claude\settings.json"
+$Marker = ".claude-notify\mqtt-publish"
+
+Write-Host "Claude Code Notify インストーラ" -ForegroundColor Green
+Write-Host ""
+
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+$BinUrl = "http://${NotifyHost}:${HttpPort}/bin/mqtt-publish.exe"
+Write-Host "mqtt-publish.exe をダウンロード中..." -ForegroundColor Yellow
+Write-Host "  URL: $BinUrl"
+try {
+    Invoke-WebRequest -Uri $BinUrl -OutFile $BinPath -UseBasicParsing
+} catch {
+    Write-Host "ダウンロードに失敗しました: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  OK $BinPath" -ForegroundColor Green
+Write-Host ""
+
+# settings.json を更新
+Write-Host "Claude Code の設定を更新中..." -ForegroundColor Yellow
+$ClaudeDir = Split-Path $SettingsFile
+if (-not (Test-Path $ClaudeDir)) {
+    New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
+}
+
+$Existing = @{}
+if (Test-Path $SettingsFile) {
+    Copy-Item $SettingsFile "$SettingsFile.bak.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $raw = Get-Content $SettingsFile -Raw
+    try {
+        $Existing = $raw | ConvertFrom-Json -AsHashtable
+    } catch {
+        $Existing = @{}
+    }
+}
+if ($Existing -isnot [hashtable]) { $Existing = @{} }
+if (-not $Existing.ContainsKey("hooks")) { $Existing["hooks"] = @{} }
+
+$StopCmd  = "`"$BinPath`" --event stop --detach -h $NotifyHost -p $MqttPort"
+$PermCmd  = "`"$BinPath`" --event permission-request --detach -h $NotifyHost -p $MqttPort"
+$NotifCmd = "`"$BinPath`" --event notification --detach -h $NotifyHost -p $MqttPort"
+
+function Strip-Ours($arr, $marker) {
+    $out = @()
+    if ($null -eq $arr) { return @() }
+    foreach ($entry in @($arr)) {
+        if ($null -eq $entry) { continue }
+        $isOurs = $false
+        if ($entry.hooks) {
+            foreach ($h in @($entry.hooks)) {
+                if ($h.command -and ($h.command -like "*$marker*")) {
+                    $isOurs = $true
+                    break
+                }
+            }
+        }
+        if (-not $isOurs) { $out += $entry }
+    }
+    return ,$out
+}
+
+function Upsert-Hook($name, $cmd, $matcher) {
+    $stripped = Strip-Ours $Existing["hooks"][$name] $Marker
+    $newEntry = @{
+        matcher = $matcher
+        hooks = @(@{ type = "command"; command = $cmd })
+    }
+    $Existing["hooks"][$name] = @(@($stripped) + @($newEntry))
+}
+
+Upsert-Hook "Stop" $StopCmd ""
+Upsert-Hook "PermissionRequest" $PermCmd ""
+Upsert-Hook "Notification" $NotifCmd "elicitation_dialog"
+
+$Existing | ConvertTo-Json -Depth 20 | Set-Content $SettingsFile -Encoding UTF8
+Write-Host "  OK $SettingsFile" -ForegroundColor Green
+Write-Host ""
+Write-Host "インストール完了！Claude Code を再起動してください" -ForegroundColor Green
+Write-Host ""
+Write-Host "アンインストール:"
+Write-Host "  iwr -useb http://${NotifyHost}:${HttpPort}/uninstall.ps1 | iex"
+"####;
+
+/// HTTP 配信版 uninstall.ps1
+pub const UNINSTALL_PS1_HTTP: &str = r####"#Requires -Version 5.1
+# Claude Code Notify - Windows アンインストーラ
+
+$ErrorActionPreference = "Stop"
+
+$InstallDir = "$env:USERPROFILE\.claude-notify"
+$SettingsFile = "$env:USERPROFILE\.claude\settings.json"
+$Marker = ".claude-notify\mqtt-publish"
+
+Write-Host "Claude Code Notify をアンインストール中..." -ForegroundColor Yellow
+
+if (Test-Path $SettingsFile) {
+    Copy-Item $SettingsFile "$SettingsFile.bak.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $raw = Get-Content $SettingsFile -Raw
+    try {
+        $Existing = $raw | ConvertFrom-Json -AsHashtable
+    } catch {
+        $Existing = @{}
+    }
+
+    if ($Existing -is [hashtable] -and $Existing.ContainsKey("hooks")) {
+        function Strip-Ours($arr, $marker) {
+            $out = @()
+            if ($null -eq $arr) { return @() }
+            foreach ($entry in @($arr)) {
+                if ($null -eq $entry) { continue }
+                $isOurs = $false
+                if ($entry.hooks) {
+                    foreach ($h in @($entry.hooks)) {
+                        if ($h.command -and ($h.command -like "*$marker*")) {
+                            $isOurs = $true
+                            break
+                        }
+                    }
+                }
+                if (-not $isOurs) { $out += $entry }
+            }
+            return ,$out
+        }
+
+        foreach ($name in @("Stop", "PermissionRequest", "Notification")) {
+            if ($Existing["hooks"].ContainsKey($name)) {
+                $Existing["hooks"][$name] = @(Strip-Ours $Existing["hooks"][$name] $Marker)
+            }
+        }
+
+        $Existing | ConvertTo-Json -Depth 20 | Set-Content $SettingsFile -Encoding UTF8
+        Write-Host "  OK settings.json から該当フックを削除" -ForegroundColor Green
+    }
+}
+
+if (Test-Path $InstallDir) {
+    Remove-Item -Recurse -Force $InstallDir
+    Write-Host "  OK $InstallDir を削除" -ForegroundColor Green
+}
+
+Write-Host "アンインストール完了" -ForegroundColor Green
+"####;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,5 +1543,37 @@ mod tests {
             STATUSLINE_PS1.contains("ConvertTo-Json"),
             "statusline.ps1 should use ConvertTo-Json"
         );
+    }
+
+    /// HTTP 配信版インストーラにプレースホルダーが存在する
+    #[test]
+    fn test_http_installers_have_placeholders() {
+        assert!(INSTALL_SH_HTTP.contains("__HOST__"));
+        assert!(INSTALL_SH_HTTP.contains("__PORT__"));
+        assert!(INSTALL_SH_HTTP.contains("__HTTP_PORT__"));
+        assert!(INSTALL_PS1_HTTP.contains("__HOST__"));
+        assert!(INSTALL_PS1_HTTP.contains("__PORT__"));
+        assert!(INSTALL_PS1_HTTP.contains("__HTTP_PORT__"));
+    }
+
+    /// HTTP 配信版の settings.json マージで識別マーカーが使われている
+    #[test]
+    fn test_http_installers_use_marker() {
+        assert!(INSTALL_SH_HTTP.contains(HTTP_HOOK_MARKER));
+        assert!(UNINSTALL_SH_HTTP.contains(HTTP_HOOK_MARKER));
+        // Windows 版では \ 区切りのマーカーを使う
+        assert!(INSTALL_PS1_HTTP.contains(".claude-notify\\mqtt-publish"));
+        assert!(UNINSTALL_PS1_HTTP.contains(".claude-notify\\mqtt-publish"));
+    }
+
+    /// HTTP 配信版は mqtt-publish の --event --detach モードを使う
+    #[test]
+    fn test_http_installers_use_event_detach_mode() {
+        assert!(INSTALL_SH_HTTP.contains("--event stop --detach"));
+        assert!(INSTALL_SH_HTTP.contains("--event permission-request --detach"));
+        assert!(INSTALL_SH_HTTP.contains("--event notification --detach"));
+        assert!(INSTALL_PS1_HTTP.contains("--event stop --detach"));
+        assert!(INSTALL_PS1_HTTP.contains("--event permission-request --detach"));
+        assert!(INSTALL_PS1_HTTP.contains("--event notification --detach"));
     }
 }

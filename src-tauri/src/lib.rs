@@ -7,6 +7,7 @@ mod audio;
 mod broker;
 mod client;
 mod export;
+mod http_server;
 mod notification_history;
 mod notification_state;
 mod settings;
@@ -254,6 +255,28 @@ fn save_settings_command(
 #[tauri::command]
 fn detect_ip() -> Result<String, String> {
     export::detect_local_ip().map_err(|e| e.to_string())
+}
+
+/// フロントエンドが表示する「ワンライナーインストール」コマンドの URL を生成する
+#[tauri::command]
+fn get_install_urls() -> Result<serde_json::Value, String> {
+    let host = export::detect_local_ip().map_err(|e| e.to_string())?;
+    let http_port = http_server::HTTP_PORT;
+    Ok(serde_json::json!({
+        "host": host,
+        "http_port": http_port,
+        "base_url": format!("http://{}:{}", host, http_port),
+        "install_sh_url": format!("http://{}:{}/install.sh", host, http_port),
+        "install_ps1_url": format!("http://{}:{}/install.ps1", host, http_port),
+        "uninstall_sh_url": format!("http://{}:{}/uninstall.sh", host, http_port),
+        "uninstall_ps1_url": format!("http://{}:{}/uninstall.ps1", host, http_port),
+        "linux_command": format!("curl -fsSL http://{}:{}/install.sh | bash", host, http_port),
+        "macos_command": format!("curl -fsSL http://{}:{}/install.sh | bash", host, http_port),
+        "windows_command": format!(
+            "iwr -useb http://{}:{}/install.ps1 | iex",
+            host, http_port
+        ),
+    }))
 }
 
 // ===== 通知履歴コマンド =====
@@ -856,7 +879,11 @@ pub fn run() {
             app.manage(history_manager.clone());
 
             let app_handle = app.handle().clone();
-            start_message_handler(app_handle, session_manager.clone(), session_name_manager.clone(), notification_manager, history_manager);
+            start_message_handler(app_handle.clone(), session_manager.clone(), session_name_manager.clone(), notification_manager, history_manager);
+
+            // HTTP 配信サーバを起動（ワンライナーインストーラとバイナリを配布）
+            // MQTT ブローカーは 1883 を使っているのでそれを渡す
+            http_server::start(app_handle, 1883);
 
             info!("Application setup complete");
             Ok(())
@@ -864,6 +891,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_broker_status,
             detect_ip,
+            get_install_urls,
             generate_config_zip,
             generate_config_zip_v2,
             settings::get_settings,

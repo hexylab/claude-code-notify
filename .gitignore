@@ -30,6 +30,10 @@ src-tauri/target/
 # Build artifacts
 *.exe
 src-tauri/resources/
+src-tauri/binaries/
+
+# Local task notes
+tasks/
 
 # Claude
 .claude/

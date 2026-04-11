@@ -787,6 +787,7 @@ name = "claude-code-notify"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "image",
  "local-ip-address",
@@ -2865,10 +2866,12 @@ dependencies = [
 
 [[package]]
 name = "mqtt-publish"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "chrono",
  "clap",
  "rumqttc",
+ "serde_json",
 ]
 
 [[package]]

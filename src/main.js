@@ -41,6 +41,13 @@ function initElements() {
 
     // ホーム
     elements.brokerStatus = document.getElementById('broker-status');
+    elements.installCommand = document.getElementById('install-command');
+    elements.copyInstallBtn = document.getElementById('copy-install-btn');
+    elements.installHint = document.getElementById('install-hint');
+    elements.installStatus = document.getElementById('install-status');
+    elements.healthUrl = document.getElementById('health-url');
+    elements.uninstallCmd = document.getElementById('uninstall-cmd');
+    elements.osTabs = document.querySelectorAll('.os-tab');
 
     // 履歴
     elements.sessionFilter = document.getElementById('session-filter');
@@ -115,9 +122,88 @@ function switchTab(tabId) {
 }
 
 // ===== ホームタブ =====
+let installUrls = null;
+let currentOs = 'linux';
+
 function initHomeTab() {
     checkBrokerStatus();
     setInterval(checkBrokerStatus, 5000);
+
+    loadInstallUrls();
+
+    elements.osTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const os = tab.dataset.os;
+            elements.osTabs.forEach(t => t.classList.toggle('active', t === tab));
+            currentOs = os;
+            renderInstallCommand();
+        });
+    });
+
+    elements.copyInstallBtn.addEventListener('click', copyInstallCommand);
+}
+
+async function loadInstallUrls() {
+    try {
+        installUrls = await invoke('get_install_urls');
+        renderInstallCommand();
+    } catch (error) {
+        console.error('Failed to load install URLs:', error);
+        elements.installCommand.textContent = 'IPアドレスの検出に失敗しました';
+        elements.installHint.textContent = 'ネットワーク設定を確認してください';
+    }
+}
+
+function renderInstallCommand() {
+    if (!installUrls) return;
+
+    let command;
+    let hint;
+    switch (currentOs) {
+        case 'macos':
+            command = installUrls.macos_command;
+            hint = `Host: ${installUrls.host} | mqtt-publish は \`~/.claude-notify/\` に配置されます`;
+            break;
+        case 'windows':
+            command = installUrls.windows_command;
+            hint = `PowerShell で実行 | mqtt-publish.exe は %USERPROFILE%\\.claude-notify\\ に配置されます`;
+            break;
+        case 'linux':
+        default:
+            command = installUrls.linux_command;
+            hint = `Host: ${installUrls.host} | mqtt-publish は \`~/.claude-notify/\` に配置されます`;
+            break;
+    }
+
+    elements.installCommand.textContent = command;
+    elements.installHint.textContent = hint;
+    elements.healthUrl.textContent = `${installUrls.base_url}/health`;
+
+    const uninstallCmd = currentOs === 'windows'
+        ? `iwr -useb ${installUrls.uninstall_ps1_url} | iex`
+        : `curl -fsSL ${installUrls.uninstall_sh_url} | bash`;
+    elements.uninstallCmd.textContent = uninstallCmd;
+}
+
+async function copyInstallCommand() {
+    try {
+        const text = elements.installCommand.textContent;
+        await navigator.clipboard.writeText(text);
+        showInstallStatus('コピーしました', 'success');
+    } catch (error) {
+        console.error('Clipboard copy failed:', error);
+        showInstallStatus('コピーに失敗しました', 'error');
+    }
+}
+
+function showInstallStatus(message, type) {
+    elements.installStatus.textContent = message;
+    elements.installStatus.className = 'install-status ' + type;
+    elements.installStatus.classList.remove('hidden');
+
+    setTimeout(() => {
+        elements.installStatus.classList.add('hidden');
+    }, 2000);
 }
 
 async function checkBrokerStatus() {
