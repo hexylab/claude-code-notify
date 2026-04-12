@@ -160,10 +160,6 @@ function renderInstallCommand() {
     let command;
     let hint;
     switch (currentOs) {
-        case 'macos':
-            command = installUrls.macos_command;
-            hint = `Host: ${installUrls.host} | mqtt-publish は \`~/.claude-notify/\` に配置されます`;
-            break;
         case 'windows':
             command = installUrls.windows_command;
             hint = `PowerShell で実行 | mqtt-publish.exe は %USERPROFILE%\\.claude-notify\\ に配置されます`;

@@ -1100,31 +1100,34 @@ PowerShellで手動でスクリプトを実行して通知が届くか確認:
 "#;
 
 // =============================================================================
-// HTTP 配信版（シェルラッパ不要、単一バイナリのみ）
+// HTTP 配信版（Claude Code プラグイン方式）
 // =============================================================================
 //
 // 方針:
 //   - Tauri アプリ内蔵の HTTP サーバがインストーラスクリプトと mqtt-publish
 //     バイナリを配信する
 //   - ユーザ操作は `curl http://WIN-IP:1884/install.sh | bash` の 1 行のみ
-//   - ~/.claude/settings.json にはインラインでコマンドを 1 行だけ追加する
-//     （ラッパスクリプト不要）
-//   - アンインストールはコマンド文字列に `.claude-notify/mqtt-publish`
-//     を含むエントリのみを除去する（ユーザ独自のフックには触らない）
+//   - Claude Code プラグインとして登録するため、~/.claude/settings.json の
+//     hooks セクションには一切触れない
+//   - プラグイン本体は ~/.claude-notify/plugin/ に配置し、claude CLI で
+//     marketplace 追加 + install を行う（settings.json には CLI が
+//     enabledPlugins に 1 エントリ追加するだけ）
+//   - v0.3 系の旧インストーラで追加された hooks エントリはマイグレーションで除去する
 
-/// HTTP インストーラの識別マーカー。settings.json 上でこの文字列を含む
-/// command エントリは「この製品が追加したもの」とみなされる。
+/// 旧版インストーラの識別マーカー。settings.json のマイグレーションで、
+/// この文字列を含む command エントリは旧版が追加したものとみなして除去する。
 #[allow(dead_code)]
 pub const HTTP_HOOK_MARKER: &str = ".claude-notify/mqtt-publish";
 
-/// HTTP 配信版 install.sh（Linux / WSL / macOS 共通）
+/// HTTP 配信版 install.sh（Linux / WSL 共通、プラグイン方式）
 ///
 /// プレースホルダー:
 ///   __HOST__      : MQTT ブローカーのホスト
 ///   __PORT__      : MQTT ブローカーのポート
 ///   __HTTP_PORT__ : Tauri アプリの HTTP サーバポート
+///   __VERSION__   : Claude Code Notify のバージョン（plugin.json に埋め込む）
 pub const INSTALL_SH_HTTP: &str = r####"#!/bin/bash
-# Claude Code Notify - ワンライナーインストーラ
+# Claude Code Notify - ワンライナーインストーラ（プラグイン方式）
 # 使い方: curl -fsSL http://<host>:<http_port>/install.sh | bash
 
 set -e
@@ -1132,10 +1135,13 @@ set -e
 HOST="${CLAUDE_NOTIFY_HOST:-__HOST__}"
 MQTT_PORT="${CLAUDE_NOTIFY_MQTT_PORT:-__PORT__}"
 HTTP_PORT="${CLAUDE_NOTIFY_HTTP_PORT:-__HTTP_PORT__}"
-INSTALL_DIR="${HOME}/.claude-notify"
-BIN_PATH="${INSTALL_DIR}/mqtt-publish"
+VERSION="__VERSION__"
+
+PLUGIN_DIR="${HOME}/.claude-notify/plugin"
+BIN_PATH="${PLUGIN_DIR}/bin/mqtt-publish"
+LEGACY_BIN="${HOME}/.claude-notify/mqtt-publish"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
-MARKER=".claude-notify/mqtt-publish"
+LEGACY_MARKER=".claude-notify/mqtt-publish"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1145,121 +1151,186 @@ NC='\033[0m'
 echo -e "${GREEN}Claude Code Notify インストーラ${NC}"
 echo ""
 
+# 前提チェック: claude CLI
+if ! command -v claude >/dev/null 2>&1; then
+    echo -e "${RED}エラー: claude CLI が PATH に見つかりません${NC}"
+    echo "Claude Code をインストールしてから再実行してください"
+    exit 1
+fi
+
 # OS 検出
-UNAME_S=$(uname -s)
-UNAME_M=$(uname -m)
-BIN_NAME=""
-case "$UNAME_S" in
+case "$(uname -s)" in
     Linux)
         BIN_NAME="mqtt-publish-linux-x64"
         ;;
-    Darwin)
-        if [ "$UNAME_M" = "arm64" ]; then
-            BIN_NAME="mqtt-publish-macos-arm64"
-        else
-            BIN_NAME="mqtt-publish-macos-x64"
-        fi
-        ;;
     *)
-        echo -e "${RED}エラー: サポート外の OS ($UNAME_S)${NC}"
+        echo -e "${RED}エラー: サポート外の OS ($(uname -s))${NC}"
+        echo "サポート対象: Linux / WSL"
         exit 1
         ;;
 esac
 
-BIN_URL="http://${HOST}:${HTTP_PORT}/bin/${BIN_NAME}"
+# 旧版 (v0.3.x) インストーラで追加された hooks を settings.json から除去
+if [ -f "$SETTINGS_FILE" ] && grep -q "$LEGACY_MARKER" "$SETTINGS_FILE" 2>/dev/null; then
+    echo -e "${YELLOW}旧版フックを settings.json から除去中...${NC}"
+    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    MIGRATED=0
+    if command -v jq >/dev/null 2>&1; then
+        CLEANED=$(jq --arg m "$LEGACY_MARKER" '
+            def strip_ours(arr): [ (arr // [])[] | select((.hooks // []) | any(.command | tostring | contains($m)) | not) ];
+            if .hooks then
+                (.hooks | keys[]) as $k | .hooks[$k] = strip_ours(.hooks[$k])
+            else . end
+            | if .hooks then .hooks |= with_entries(select((.value | length) > 0)) else . end
+            | if .hooks == {} then del(.hooks) else . end
+        ' "$SETTINGS_FILE")
+        printf '%s\n' "$CLEANED" > "$SETTINGS_FILE"
+        MIGRATED=1
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$SETTINGS_FILE" "$LEGACY_MARKER" <<'PY'
+import json, sys
+path, marker = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = json.load(f)
+hooks = data.get("hooks") or {}
+def strip_ours(arr):
+    return [e for e in (arr or []) if not any(marker in (h.get("command", "") or "") for h in (e.get("hooks") or []))]
+for name in list(hooks.keys()):
+    hooks[name] = strip_ours(hooks[name])
+    if not hooks[name]:
+        del hooks[name]
+if not hooks:
+    data.pop("hooks", None)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+        MIGRATED=1
+    fi
 
+    if [ "$MIGRATED" -eq 1 ]; then
+        echo -e "  ${GREEN}OK${NC} 旧フックを除去"
+    else
+        echo -e "  ${YELLOW}WARN${NC} jq も python3 も無いため旧フック除去はスキップしました"
+        echo "  手動で ${SETTINGS_FILE} から '${LEGACY_MARKER}' を含む hooks を削除してください"
+    fi
+fi
+
+# 旧版バイナリが残っていれば削除
+if [ -f "$LEGACY_BIN" ]; then
+    rm -f "$LEGACY_BIN"
+fi
+
+# プラグインディレクトリをクリーンに再構築
+rm -rf "$PLUGIN_DIR"
+mkdir -p "$PLUGIN_DIR/.claude-plugin" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/bin"
+
+# バイナリをダウンロード
+BIN_URL="http://${HOST}:${HTTP_PORT}/bin/${BIN_NAME}"
 echo -e "${YELLOW}mqtt-publish をダウンロード中...${NC}"
 echo "  URL: $BIN_URL"
-mkdir -p "$INSTALL_DIR"
-
 if ! curl -fsSL "$BIN_URL" -o "$BIN_PATH"; then
     echo -e "${RED}ダウンロードに失敗しました${NC}"
     echo "確認してください:"
     echo "  - Windows 側で Claude Code Notify が起動している"
     echo "  - Windows ファイアウォールで TCP ${HTTP_PORT} が許可されている"
-    echo "  - ネットワーク到達性: curl http://${HOST}:${HTTP_PORT}/health"
+    echo "  - 疎通テスト: curl http://${HOST}:${HTTP_PORT}/health"
     exit 1
 fi
 chmod +x "$BIN_PATH"
 echo -e "  ${GREEN}OK${NC} $BIN_PATH"
 echo ""
 
-# settings.json をマージ
-echo -e "${YELLOW}Claude Code の設定を更新中...${NC}"
-mkdir -p "$(dirname "$SETTINGS_FILE")"
+# marketplace.json
+cat > "$PLUGIN_DIR/.claude-plugin/marketplace.json" <<'EOF'
+{
+  "name": "claude-code-notify",
+  "owner": {"name": "hexyl"},
+  "description": "System tray notifications for Claude Code via MQTT",
+  "plugins": [
+    {
+      "name": "claude-code-notify",
+      "source": "./",
+      "description": "System tray notifications for Claude Code via MQTT"
+    }
+  ]
+}
+EOF
 
-if [ -f "$SETTINGS_FILE" ]; then
-    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-    EXISTING=$(cat "$SETTINGS_FILE")
-else
-    EXISTING="{}"
-fi
+# plugin.json
+cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<EOF
+{
+  "name": "claude-code-notify",
+  "version": "${VERSION}",
+  "description": "System tray notifications for Claude Code via MQTT",
+  "author": {"name": "hexyl"}
+}
+EOF
 
-STOP_CMD="${BIN_PATH} --event stop --detach -h ${HOST} -p ${MQTT_PORT}"
-PERM_CMD="${BIN_PATH} --event permission-request --detach -h ${HOST} -p ${MQTT_PORT}"
-NOTIF_CMD="${BIN_PATH} --event notification --detach -h ${HOST} -p ${MQTT_PORT}"
+# hooks/hooks.json（絶対パスで mqtt-publish を呼び出す）
+cat > "$PLUGIN_DIR/hooks/hooks.json" <<EOF
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${BIN_PATH} --event stop --detach -h ${HOST} -p ${MQTT_PORT}"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${BIN_PATH} --event permission-request --detach -h ${HOST} -p ${MQTT_PORT}"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${BIN_PATH} --event notification --detach -h ${HOST} -p ${MQTT_PORT}"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
 
-if command -v jq >/dev/null 2>&1; then
-    MERGED=$(printf '%s' "$EXISTING" | jq \
-        --arg marker "$MARKER" \
-        --arg stop "$STOP_CMD" \
-        --arg perm "$PERM_CMD" \
-        --arg notif "$NOTIF_CMD" '
-        def strip_ours(arr): [ (arr // [])[] | select((.hooks // []) | any(.command | tostring | contains($marker)) | not) ];
-        def upsert(name; cmd; matcher):
-            .hooks[name] = (strip_ours(.hooks[name]) + [{matcher: matcher, hooks: [{type: "command", command: cmd}]}]);
-        .hooks = (.hooks // {})
-        | upsert("Stop"; $stop; "")
-        | upsert("PermissionRequest"; $perm; "")
-        | upsert("Notification"; $notif; "elicitation_dialog")
-        ')
-elif command -v python3 >/dev/null 2>&1; then
-    PY_CODE='
-import json, sys
-marker, stop_cmd, perm_cmd, notif_cmd = sys.argv[1:5]
-raw = sys.stdin.read().strip()
-data = json.loads(raw) if raw else {}
-hooks = data.setdefault("hooks", {})
-def strip_ours(arr):
-    return [e for e in (arr or []) if not any(marker in (h.get("command", "") or "") for h in (e.get("hooks") or []))]
-def upsert(name, cmd, matcher):
-    hooks[name] = strip_ours(hooks.get(name)) + [{"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]}]
-upsert("Stop", stop_cmd, "")
-upsert("PermissionRequest", perm_cmd, "")
-upsert("Notification", notif_cmd, "elicitation_dialog")
-print(json.dumps(data, indent=2, ensure_ascii=False))
-'
-    MERGED=$(printf '%s' "$EXISTING" | python3 -c "$PY_CODE" "$MARKER" "$STOP_CMD" "$PERM_CMD" "$NOTIF_CMD")
-else
-    echo -e "${RED}エラー: jq または python3 が必要です${NC}"
-    echo "  Ubuntu/Debian: sudo apt install jq"
-    echo "  macOS:         brew install jq"
-    exit 1
-fi
-
-printf '%s\n' "$MERGED" > "$SETTINGS_FILE"
-echo -e "  ${GREEN}OK${NC} $SETTINGS_FILE"
+echo -e "${YELLOW}Claude Code にプラグインを登録中...${NC}"
+claude plugin marketplace add "$PLUGIN_DIR" 2>&1 | sed 's/^/  /'
+claude plugin install claude-code-notify@claude-code-notify 2>&1 | sed 's/^/  /'
 echo ""
+
 echo -e "${GREEN}インストール完了！${NC}"
 echo ""
 echo "次の手順:"
-echo "  1. Claude Code を再起動してください"
+echo "  1. 実行中の Claude Code セッションを再起動してください"
 echo "  2. タスクが完了すると Windows 側に通知が届きます"
 echo ""
 echo "アンインストール:"
 echo "  curl -fsSL http://${HOST}:${HTTP_PORT}/uninstall.sh | bash"
 "####;
 
-/// HTTP 配信版 uninstall.sh
+/// HTTP 配信版 uninstall.sh（プラグイン方式）
 pub const UNINSTALL_SH_HTTP: &str = r####"#!/bin/bash
-# Claude Code Notify - アンインストーラ
+# Claude Code Notify - アンインストーラ（プラグイン方式）
 # 使い方: curl -fsSL http://<host>:<http_port>/uninstall.sh | bash
 
 set -e
 
 INSTALL_DIR="${HOME}/.claude-notify"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
-MARKER=".claude-notify/mqtt-publish"
+LEGACY_MARKER=".claude-notify/mqtt-publish"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -1267,43 +1338,57 @@ NC='\033[0m'
 
 echo -e "${YELLOW}Claude Code Notify をアンインストール中...${NC}"
 
-if [ -f "$SETTINGS_FILE" ]; then
-    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-    EXISTING=$(cat "$SETTINGS_FILE")
+# プラグインをアンインストール（存在しない場合でも失敗させない）
+if command -v claude >/dev/null 2>&1; then
+    claude plugin uninstall claude-code-notify@claude-code-notify 2>&1 | sed 's/^/  /' || true
+    claude plugin marketplace remove claude-code-notify 2>&1 | sed 's/^/  /' || true
+fi
 
+# 旧版 hooks の残骸を settings.json から除去
+if [ -f "$SETTINGS_FILE" ] && grep -q "$LEGACY_MARKER" "$SETTINGS_FILE" 2>/dev/null; then
+    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    MIGRATED=0
     if command -v jq >/dev/null 2>&1; then
-        CLEANED=$(printf '%s' "$EXISTING" | jq --arg marker "$MARKER" '
-            def strip_ours(arr): [ (arr // [])[] | select((.hooks // []) | any(.command | tostring | contains($marker)) | not) ];
+        CLEANED=$(jq --arg m "$LEGACY_MARKER" '
+            def strip_ours(arr): [ (arr // [])[] | select((.hooks // []) | any(.command | tostring | contains($m)) | not) ];
             if .hooks then
-                .hooks.Stop = strip_ours(.hooks.Stop) |
-                .hooks.PermissionRequest = strip_ours(.hooks.PermissionRequest) |
-                .hooks.Notification = strip_ours(.hooks.Notification)
+                (.hooks | keys[]) as $k | .hooks[$k] = strip_ours(.hooks[$k])
             else . end
-        ')
+            | if .hooks then .hooks |= with_entries(select((.value | length) > 0)) else . end
+            | if .hooks == {} then del(.hooks) else . end
+        ' "$SETTINGS_FILE")
+        printf '%s\n' "$CLEANED" > "$SETTINGS_FILE"
+        MIGRATED=1
     elif command -v python3 >/dev/null 2>&1; then
-        PY_CODE='
+        python3 - "$SETTINGS_FILE" "$LEGACY_MARKER" <<'PY'
 import json, sys
-marker = sys.argv[1]
-raw = sys.stdin.read().strip()
-data = json.loads(raw) if raw else {}
+path, marker = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = json.load(f)
 hooks = data.get("hooks") or {}
 def strip_ours(arr):
     return [e for e in (arr or []) if not any(marker in (h.get("command", "") or "") for h in (e.get("hooks") or []))]
-for name in ("Stop", "PermissionRequest", "Notification"):
-    if name in hooks:
-        hooks[name] = strip_ours(hooks[name])
-print(json.dumps(data, indent=2, ensure_ascii=False))
-'
-        CLEANED=$(printf '%s' "$EXISTING" | python3 -c "$PY_CODE" "$MARKER")
-    else
-        echo "jq または python3 が必要です"
-        exit 1
+for name in list(hooks.keys()):
+    hooks[name] = strip_ours(hooks[name])
+    if not hooks[name]:
+        del hooks[name]
+if not hooks:
+    data.pop("hooks", None)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+        MIGRATED=1
     fi
 
-    printf '%s\n' "$CLEANED" > "$SETTINGS_FILE"
-    echo -e "  ${GREEN}OK${NC} settings.json から該当フックを削除"
+    if [ "$MIGRATED" -eq 1 ]; then
+        echo -e "  ${GREEN}OK${NC} settings.json から旧フックを除去"
+    else
+        echo -e "  ${YELLOW}WARN${NC} jq も python3 も無いため旧フック除去はスキップしました"
+    fi
 fi
 
+# プラグインディレクトリ削除
 if [ -d "$INSTALL_DIR" ]; then
     rm -rf "$INSTALL_DIR"
     echo -e "  ${GREEN}OK${NC} $INSTALL_DIR を削除"
@@ -1312,9 +1397,9 @@ fi
 echo -e "${GREEN}アンインストール完了${NC}"
 "####;
 
-/// HTTP 配信版 install.ps1（Windows）
+/// HTTP 配信版 install.ps1（Windows、プラグイン方式）
 pub const INSTALL_PS1_HTTP: &str = r####"#Requires -Version 5.1
-# Claude Code Notify - Windows ワンライナーインストーラ
+# Claude Code Notify - Windows ワンライナーインストーラ（プラグイン方式）
 # 使い方: iwr -useb http://<host>:<http_port>/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
@@ -1322,16 +1407,90 @@ $ErrorActionPreference = "Stop"
 $NotifyHost = if ($env:CLAUDE_NOTIFY_HOST) { $env:CLAUDE_NOTIFY_HOST } else { "__HOST__" }
 $MqttPort   = if ($env:CLAUDE_NOTIFY_MQTT_PORT) { $env:CLAUDE_NOTIFY_MQTT_PORT } else { "__PORT__" }
 $HttpPort   = if ($env:CLAUDE_NOTIFY_HTTP_PORT) { $env:CLAUDE_NOTIFY_HTTP_PORT } else { "__HTTP_PORT__" }
-$InstallDir = "$env:USERPROFILE\.claude-notify"
-$BinPath    = "$InstallDir\mqtt-publish.exe"
+$Version    = "__VERSION__"
+
+$PluginDir  = "$env:USERPROFILE\.claude-notify\plugin"
+$BinPath    = "$PluginDir\bin\mqtt-publish.exe"
+$LegacyBin  = "$env:USERPROFILE\.claude-notify\mqtt-publish.exe"
 $SettingsFile = "$env:USERPROFILE\.claude\settings.json"
-$Marker = ".claude-notify\mqtt-publish"
+$LegacyMarker = ".claude-notify\mqtt-publish"
+
+# PowerShell 5.1 の Set-Content で UTF8 を指定すると BOM 付きになり JSON パーサが
+# 受け付けないため、BOM なし UTF-8 で書き込むヘルパを使う
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $enc = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
 
 Write-Host "Claude Code Notify インストーラ" -ForegroundColor Green
 Write-Host ""
 
-New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+# 前提チェック: claude CLI
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Write-Host "エラー: claude CLI が PATH に見つかりません" -ForegroundColor Red
+    Write-Host "Claude Code をインストールしてから再実行してください"
+    exit 1
+}
 
+# 旧版 hooks のマイグレーション
+if (Test-Path $SettingsFile) {
+    $raw = Get-Content $SettingsFile -Raw -ErrorAction SilentlyContinue
+    if ($raw -and $raw -match [regex]::Escape($LegacyMarker)) {
+        Write-Host "旧版フックを settings.json から除去中..." -ForegroundColor Yellow
+        Copy-Item $SettingsFile "$SettingsFile.bak.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        try {
+            $Existing = $raw | ConvertFrom-Json -AsHashtable
+        } catch {
+            $Existing = @{}
+        }
+        if ($Existing -is [hashtable] -and $Existing.ContainsKey("hooks")) {
+            $hookNames = @($Existing["hooks"].Keys)
+            foreach ($name in $hookNames) {
+                $arr = $Existing["hooks"][$name]
+                $out = @()
+                foreach ($entry in @($arr)) {
+                    if ($null -eq $entry) { continue }
+                    $isOurs = $false
+                    if ($entry.hooks) {
+                        foreach ($h in @($entry.hooks)) {
+                            if ($h.command -and ($h.command -like "*$LegacyMarker*")) {
+                                $isOurs = $true
+                                break
+                            }
+                        }
+                    }
+                    if (-not $isOurs) { $out += $entry }
+                }
+                if ($out.Count -eq 0) {
+                    $Existing["hooks"].Remove($name)
+                } else {
+                    $Existing["hooks"][$name] = @($out)
+                }
+            }
+            if ($Existing["hooks"].Count -eq 0) {
+                $Existing.Remove("hooks")
+            }
+            Write-Utf8NoBom $SettingsFile ($Existing | ConvertTo-Json -Depth 20)
+            Write-Host "  OK 旧フックを除去" -ForegroundColor Green
+        }
+    }
+}
+
+# 旧バイナリが残っていれば削除
+if (Test-Path $LegacyBin) {
+    Remove-Item $LegacyBin -Force -ErrorAction SilentlyContinue
+}
+
+# プラグインディレクトリをクリーンに再構築
+if (Test-Path $PluginDir) {
+    Remove-Item -Recurse -Force $PluginDir
+}
+New-Item -ItemType Directory -Path "$PluginDir\.claude-plugin" -Force | Out-Null
+New-Item -ItemType Directory -Path "$PluginDir\hooks" -Force | Out-Null
+New-Item -ItemType Directory -Path "$PluginDir\bin" -Force | Out-Null
+
+# バイナリをダウンロード
 $BinUrl = "http://${NotifyHost}:${HttpPort}/bin/mqtt-publish.exe"
 Write-Host "mqtt-publish.exe をダウンロード中..." -ForegroundColor Yellow
 Write-Host "  URL: $BinUrl"
@@ -1344,123 +1503,132 @@ try {
 Write-Host "  OK $BinPath" -ForegroundColor Green
 Write-Host ""
 
-# settings.json を更新
-Write-Host "Claude Code の設定を更新中..." -ForegroundColor Yellow
-$ClaudeDir = Split-Path $SettingsFile
-if (-not (Test-Path $ClaudeDir)) {
-    New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
+# marketplace.json
+$Marketplace = @{
+    name = "claude-code-notify"
+    owner = @{ name = "hexyl" }
+    description = "System tray notifications for Claude Code via MQTT"
+    plugins = @(@{
+        name = "claude-code-notify"
+        source = "./"
+        description = "System tray notifications for Claude Code via MQTT"
+    })
 }
+Write-Utf8NoBom "$PluginDir\.claude-plugin\marketplace.json" ($Marketplace | ConvertTo-Json -Depth 10)
 
-$Existing = @{}
-if (Test-Path $SettingsFile) {
-    Copy-Item $SettingsFile "$SettingsFile.bak.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-    $raw = Get-Content $SettingsFile -Raw
-    try {
-        $Existing = $raw | ConvertFrom-Json -AsHashtable
-    } catch {
-        $Existing = @{}
-    }
+# plugin.json
+$PluginManifest = @{
+    name = "claude-code-notify"
+    version = $Version
+    description = "System tray notifications for Claude Code via MQTT"
+    author = @{ name = "hexyl" }
 }
-if ($Existing -isnot [hashtable]) { $Existing = @{} }
-if (-not $Existing.ContainsKey("hooks")) { $Existing["hooks"] = @{} }
+Write-Utf8NoBom "$PluginDir\.claude-plugin\plugin.json" ($PluginManifest | ConvertTo-Json -Depth 10)
 
+# hooks/hooks.json
 $StopCmd  = "`"$BinPath`" --event stop --detach -h $NotifyHost -p $MqttPort"
 $PermCmd  = "`"$BinPath`" --event permission-request --detach -h $NotifyHost -p $MqttPort"
 $NotifCmd = "`"$BinPath`" --event notification --detach -h $NotifyHost -p $MqttPort"
 
-function Strip-Ours($arr, $marker) {
-    $out = @()
-    if ($null -eq $arr) { return @() }
-    foreach ($entry in @($arr)) {
-        if ($null -eq $entry) { continue }
-        $isOurs = $false
-        if ($entry.hooks) {
-            foreach ($h in @($entry.hooks)) {
-                if ($h.command -and ($h.command -like "*$marker*")) {
-                    $isOurs = $true
-                    break
-                }
-            }
-        }
-        if (-not $isOurs) { $out += $entry }
+$HooksManifest = @{
+    hooks = @{
+        Stop = @(@{
+            hooks = @(@{ type = "command"; command = $StopCmd })
+        })
+        PermissionRequest = @(@{
+            hooks = @(@{ type = "command"; command = $PermCmd })
+        })
+        Notification = @(@{
+            matcher = "elicitation_dialog"
+            hooks = @(@{ type = "command"; command = $NotifCmd })
+        })
     }
-    return ,$out
 }
+Write-Utf8NoBom "$PluginDir\hooks\hooks.json" ($HooksManifest | ConvertTo-Json -Depth 20)
 
-function Upsert-Hook($name, $cmd, $matcher) {
-    $stripped = Strip-Ours $Existing["hooks"][$name] $Marker
-    $newEntry = @{
-        matcher = $matcher
-        hooks = @(@{ type = "command"; command = $cmd })
-    }
-    $Existing["hooks"][$name] = @(@($stripped) + @($newEntry))
-}
-
-Upsert-Hook "Stop" $StopCmd ""
-Upsert-Hook "PermissionRequest" $PermCmd ""
-Upsert-Hook "Notification" $NotifCmd "elicitation_dialog"
-
-$Existing | ConvertTo-Json -Depth 20 | Set-Content $SettingsFile -Encoding UTF8
-Write-Host "  OK $SettingsFile" -ForegroundColor Green
+Write-Host "Claude Code にプラグインを登録中..." -ForegroundColor Yellow
+& claude plugin marketplace add $PluginDir 2>&1 | ForEach-Object { "  $_" }
+& claude plugin install claude-code-notify@claude-code-notify 2>&1 | ForEach-Object { "  $_" }
 Write-Host ""
-Write-Host "インストール完了！Claude Code を再起動してください" -ForegroundColor Green
+
+Write-Host "インストール完了！" -ForegroundColor Green
+Write-Host ""
+Write-Host "次の手順:"
+Write-Host "  1. 実行中の Claude Code セッションを再起動してください"
+Write-Host "  2. タスクが完了すると Windows 側に通知が届きます"
 Write-Host ""
 Write-Host "アンインストール:"
 Write-Host "  iwr -useb http://${NotifyHost}:${HttpPort}/uninstall.ps1 | iex"
 "####;
 
-/// HTTP 配信版 uninstall.ps1
+/// HTTP 配信版 uninstall.ps1（プラグイン方式）
 pub const UNINSTALL_PS1_HTTP: &str = r####"#Requires -Version 5.1
-# Claude Code Notify - Windows アンインストーラ
+# Claude Code Notify - Windows アンインストーラ（プラグイン方式）
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 $InstallDir = "$env:USERPROFILE\.claude-notify"
 $SettingsFile = "$env:USERPROFILE\.claude\settings.json"
-$Marker = ".claude-notify\mqtt-publish"
+$LegacyMarker = ".claude-notify\mqtt-publish"
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $enc = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
 
 Write-Host "Claude Code Notify をアンインストール中..." -ForegroundColor Yellow
 
-if (Test-Path $SettingsFile) {
-    Copy-Item $SettingsFile "$SettingsFile.bak.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-    $raw = Get-Content $SettingsFile -Raw
-    try {
-        $Existing = $raw | ConvertFrom-Json -AsHashtable
-    } catch {
-        $Existing = @{}
-    }
+# プラグインをアンインストール（存在しない場合も続行）
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    & claude plugin uninstall claude-code-notify@claude-code-notify 2>&1 | ForEach-Object { "  $_" }
+    & claude plugin marketplace remove claude-code-notify 2>&1 | ForEach-Object { "  $_" }
+}
 
-    if ($Existing -is [hashtable] -and $Existing.ContainsKey("hooks")) {
-        function Strip-Ours($arr, $marker) {
-            $out = @()
-            if ($null -eq $arr) { return @() }
-            foreach ($entry in @($arr)) {
-                if ($null -eq $entry) { continue }
-                $isOurs = $false
-                if ($entry.hooks) {
-                    foreach ($h in @($entry.hooks)) {
-                        if ($h.command -and ($h.command -like "*$marker*")) {
-                            $isOurs = $true
-                            break
+# 旧版 hooks の残骸を settings.json から除去
+if (Test-Path $SettingsFile) {
+    $raw = Get-Content $SettingsFile -Raw -ErrorAction SilentlyContinue
+    if ($raw -and $raw -match [regex]::Escape($LegacyMarker)) {
+        Copy-Item $SettingsFile "$SettingsFile.bak.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        try {
+            $Existing = $raw | ConvertFrom-Json -AsHashtable
+        } catch {
+            $Existing = @{}
+        }
+        if ($Existing -is [hashtable] -and $Existing.ContainsKey("hooks")) {
+            $hookNames = @($Existing["hooks"].Keys)
+            foreach ($name in $hookNames) {
+                $arr = $Existing["hooks"][$name]
+                $out = @()
+                foreach ($entry in @($arr)) {
+                    if ($null -eq $entry) { continue }
+                    $isOurs = $false
+                    if ($entry.hooks) {
+                        foreach ($h in @($entry.hooks)) {
+                            if ($h.command -and ($h.command -like "*$LegacyMarker*")) {
+                                $isOurs = $true
+                                break
+                            }
                         }
                     }
+                    if (-not $isOurs) { $out += $entry }
                 }
-                if (-not $isOurs) { $out += $entry }
+                if ($out.Count -eq 0) {
+                    $Existing["hooks"].Remove($name)
+                } else {
+                    $Existing["hooks"][$name] = @($out)
+                }
             }
-            return ,$out
-        }
-
-        foreach ($name in @("Stop", "PermissionRequest", "Notification")) {
-            if ($Existing["hooks"].ContainsKey($name)) {
-                $Existing["hooks"][$name] = @(Strip-Ours $Existing["hooks"][$name] $Marker)
+            if ($Existing["hooks"].Count -eq 0) {
+                $Existing.Remove("hooks")
             }
+            Write-Utf8NoBom $SettingsFile ($Existing | ConvertTo-Json -Depth 20)
+            Write-Host "  OK settings.json から旧フックを除去" -ForegroundColor Green
         }
-
-        $Existing | ConvertTo-Json -Depth 20 | Set-Content $SettingsFile -Encoding UTF8
-        Write-Host "  OK settings.json から該当フックを削除" -ForegroundColor Green
     }
 }
 
+# プラグインディレクトリ削除
 if (Test-Path $InstallDir) {
     Remove-Item -Recurse -Force $InstallDir
     Write-Host "  OK $InstallDir を削除" -ForegroundColor Green
@@ -1551,14 +1719,16 @@ mod tests {
         assert!(INSTALL_SH_HTTP.contains("__HOST__"));
         assert!(INSTALL_SH_HTTP.contains("__PORT__"));
         assert!(INSTALL_SH_HTTP.contains("__HTTP_PORT__"));
+        assert!(INSTALL_SH_HTTP.contains("__VERSION__"));
         assert!(INSTALL_PS1_HTTP.contains("__HOST__"));
         assert!(INSTALL_PS1_HTTP.contains("__PORT__"));
         assert!(INSTALL_PS1_HTTP.contains("__HTTP_PORT__"));
+        assert!(INSTALL_PS1_HTTP.contains("__VERSION__"));
     }
 
-    /// HTTP 配信版の settings.json マージで識別マーカーが使われている
+    /// 旧版 hooks のマイグレーション用にレガシーマーカーが使われている
     #[test]
-    fn test_http_installers_use_marker() {
+    fn test_http_installers_use_legacy_marker_for_migration() {
         assert!(INSTALL_SH_HTTP.contains(HTTP_HOOK_MARKER));
         assert!(UNINSTALL_SH_HTTP.contains(HTTP_HOOK_MARKER));
         // Windows 版では \ 区切りのマーカーを使う
@@ -1575,5 +1745,78 @@ mod tests {
         assert!(INSTALL_PS1_HTTP.contains("--event stop --detach"));
         assert!(INSTALL_PS1_HTTP.contains("--event permission-request --detach"));
         assert!(INSTALL_PS1_HTTP.contains("--event notification --detach"));
+    }
+
+    /// HTTP 配信版は Claude Code プラグインとして登録する
+    #[test]
+    fn test_http_installers_register_as_plugin() {
+        // Linux: marketplace 追加 + install
+        assert!(INSTALL_SH_HTTP.contains("claude plugin marketplace add"));
+        assert!(INSTALL_SH_HTTP.contains("claude plugin install claude-code-notify@claude-code-notify"));
+        // Linux: uninstall でも CLI を呼ぶ
+        assert!(UNINSTALL_SH_HTTP.contains("claude plugin uninstall claude-code-notify@claude-code-notify"));
+        assert!(UNINSTALL_SH_HTTP.contains("claude plugin marketplace remove claude-code-notify"));
+
+        // Windows: 同上
+        assert!(INSTALL_PS1_HTTP.contains("claude plugin marketplace add"));
+        assert!(INSTALL_PS1_HTTP.contains("claude plugin install claude-code-notify@claude-code-notify"));
+        assert!(UNINSTALL_PS1_HTTP.contains("claude plugin uninstall claude-code-notify@claude-code-notify"));
+        assert!(UNINSTALL_PS1_HTTP.contains("claude plugin marketplace remove claude-code-notify"));
+    }
+
+    /// HTTP 配信版は settings.json の hooks セクションには新規書き込みしない
+    ///
+    /// 旧版マイグレーションで "strip" する記述だけは含まれるが、新しいフックを
+    /// hooks セクションに "追加" する記述は含まれないこと。
+    #[test]
+    fn test_http_installers_do_not_write_to_settings_hooks() {
+        // Linux: 旧実装の upsert / merge 系の識別子が存在しないこと
+        assert!(!INSTALL_SH_HTTP.contains("def upsert"));
+        assert!(!INSTALL_SH_HTTP.contains("upsert(\"Stop\""));
+        // 新実装はプラグインディレクトリに hooks.json を生成する
+        assert!(INSTALL_SH_HTTP.contains("$PLUGIN_DIR/hooks/hooks.json"));
+
+        // Windows: Upsert-Hook 関数が無い
+        assert!(!INSTALL_PS1_HTTP.contains("Upsert-Hook"));
+        assert!(INSTALL_PS1_HTTP.contains("$PluginDir\\hooks\\hooks.json"));
+    }
+
+    /// PowerShell 版インストーラが BOM 付き UTF-8 を書き出さないこと
+    ///
+    /// `Set-Content -Encoding UTF8` は PS5.1 では BOM 付きになり JSON が壊れる。
+    /// 必ず `Write-Utf8NoBom` ヘルパ経由で書き込むこと。
+    #[test]
+    fn test_ps1_installers_do_not_use_set_content_utf8() {
+        for (name, src) in [
+            ("INSTALL_PS1_HTTP", INSTALL_PS1_HTTP),
+            ("UNINSTALL_PS1_HTTP", UNINSTALL_PS1_HTTP),
+        ] {
+            assert!(
+                !src.contains("Set-Content") || src.contains("Write-Utf8NoBom"),
+                "{} が Set-Content を使っている可能性がある（BOM 付き UTF-8 になり JSON パーサが壊れる）。Write-Utf8NoBom を使うこと。",
+                name
+            );
+            assert!(
+                !src.contains("-Encoding UTF8"),
+                "{} は -Encoding UTF8 を使わず Write-Utf8NoBom を使うこと",
+                name
+            );
+        }
+    }
+
+    /// プラグインの hooks.json に 3 つのイベントが含まれる
+    #[test]
+    fn test_plugin_hooks_json_contains_all_events() {
+        // Linux の heredoc 内
+        assert!(INSTALL_SH_HTTP.contains("\"Stop\":"));
+        assert!(INSTALL_SH_HTTP.contains("\"PermissionRequest\":"));
+        assert!(INSTALL_SH_HTTP.contains("\"Notification\":"));
+        assert!(INSTALL_SH_HTTP.contains("\"elicitation_dialog\""));
+
+        // Windows は ConvertTo-Json なので hashtable キーで検証
+        assert!(INSTALL_PS1_HTTP.contains("Stop ="));
+        assert!(INSTALL_PS1_HTTP.contains("PermissionRequest ="));
+        assert!(INSTALL_PS1_HTTP.contains("Notification ="));
+        assert!(INSTALL_PS1_HTTP.contains("\"elicitation_dialog\""));
     }
 }

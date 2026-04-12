@@ -72,23 +72,36 @@ cp target/x86_64-pc-windows-gnu/release/mqtt-publish.exe src-tauri/binaries/mqtt
 配置できる名前:
 - `mqtt-publish.exe` - Windows x86_64
 - `mqtt-publish-linux-x64` - Linux x86_64
-- `mqtt-publish-macos-arm64` - macOS Apple Silicon（任意）
-- `mqtt-publish-macos-x64` - macOS Intel（任意）
 
 ## アーキテクチャ
 
 ```
 Claude Code (WSL/SSH)
-    ↓ Hooks + Statusline → MQTT publish
+    ↓ Plugin hooks (~/.claude-notify/plugin/hooks/hooks.json) → mqtt-publish
     ↓ TCP:1883
 Windows PC (Tauri App)
     ├── MQTT Broker (rumqttd)
     ├── MQTT Client (rumqttc)
+    ├── HTTP Server (:1884, インストーラ・バイナリ配信)
     ├── State Manager
     └── Notification Manager
     ↓
 Windows Toast通知 / トレイツールチップ
 ```
+
+### インストール方式（v0.4.0〜）
+
+`curl http://WIN-IP:1884/install.sh | bash` で以下が実行される:
+
+1. `mqtt-publish` バイナリを `~/.claude-notify/plugin/bin/` に配置
+2. `~/.claude-notify/plugin/` に Claude Code プラグインとしてのマニフェストを展開
+   （`.claude-plugin/marketplace.json`, `plugin.json`, `hooks/hooks.json`）
+3. `claude plugin marketplace add` + `claude plugin install` で Claude Code に登録
+4. 旧版 (v0.3.x) で `~/.claude/settings.json` の hooks に追加されていた
+   エントリは自動マイグレーションで除去される
+
+ユーザの `settings.json` の hooks セクションには一切書き込まない。
+プラグインの enabledPlugins エントリのみが追加される（CLI が管理）。
 
 ### MQTTトピック構造
 

@@ -34,8 +34,6 @@ src-tauri/binaries/*
 # Linux クライアント用バイナリは tauri build 時に同梱したいのでコミットする
 # (Windows用 .exe は *.exe ルールで引き続き除外、各自ローカルでビルド)
 !src-tauri/binaries/mqtt-publish-linux-x64
-!src-tauri/binaries/mqtt-publish-macos-arm64
-!src-tauri/binaries/mqtt-publish-macos-x64
 
 # Local task notes
 tasks/

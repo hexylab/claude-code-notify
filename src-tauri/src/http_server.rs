@@ -1,6 +1,6 @@
 //! 導入用 HTTP サーバ
 //!
-//! Tauri アプリ内蔵の軽量 HTTP サーバ。WSL / Linux / macOS / Windows の
+//! Tauri アプリ内蔵の軽量 HTTP サーバ。WSL / Linux / Windows の
 //! クライアント側が `curl http://<host>:1884/install.sh | bash` のワン
 //! ライナーでインストーラを取得できるようにする。併せて `mqtt-publish`
 //! バイナリも同じポートで配信する。
@@ -109,7 +109,8 @@ async fn install_sh_handler(State(state): State<HttpState>, headers: HeaderMap) 
     let body = templates::INSTALL_SH_HTTP
         .replace("__HOST__", &host)
         .replace("__PORT__", &state.mqtt_port.to_string())
-        .replace("__HTTP_PORT__", &HTTP_PORT.to_string());
+        .replace("__HTTP_PORT__", &HTTP_PORT.to_string())
+        .replace("__VERSION__", APP_VERSION);
     text_response(body)
 }
 
@@ -118,7 +119,8 @@ async fn install_ps1_handler(State(state): State<HttpState>, headers: HeaderMap)
     let body = templates::INSTALL_PS1_HTTP
         .replace("__HOST__", &host)
         .replace("__PORT__", &state.mqtt_port.to_string())
-        .replace("__HTTP_PORT__", &HTTP_PORT.to_string());
+        .replace("__HTTP_PORT__", &HTTP_PORT.to_string())
+        .replace("__VERSION__", APP_VERSION);
     text_response(body)
 }
 
@@ -140,13 +142,7 @@ fn text_response(body: String) -> Response<Body> {
 
 /// 許可されたバイナリ名のみを受け付ける
 fn is_allowed_binary(name: &str) -> bool {
-    matches!(
-        name,
-        "mqtt-publish-linux-x64"
-            | "mqtt-publish-macos-arm64"
-            | "mqtt-publish-macos-x64"
-            | "mqtt-publish.exe"
-    )
+    matches!(name, "mqtt-publish-linux-x64" | "mqtt-publish.exe")
 }
 
 async fn serve_binary(
@@ -155,7 +151,7 @@ async fn serve_binary(
 ) -> Response<Body> {
     if !is_allowed_binary(&name) {
         return not_found(format!(
-            "Unknown binary: {}\nSupported: mqtt-publish-linux-x64, mqtt-publish-macos-arm64, mqtt-publish-macos-x64, mqtt-publish.exe\n",
+            "Unknown binary: {}\nSupported: mqtt-publish-linux-x64, mqtt-publish.exe\n",
             name
         ));
     }
@@ -254,8 +250,8 @@ mod tests {
     #[test]
     fn test_is_allowed_binary() {
         assert!(is_allowed_binary("mqtt-publish-linux-x64"));
-        assert!(is_allowed_binary("mqtt-publish-macos-arm64"));
         assert!(is_allowed_binary("mqtt-publish.exe"));
+        assert!(!is_allowed_binary("mqtt-publish-macos-arm64"));
         assert!(!is_allowed_binary("../etc/passwd"));
         assert!(!is_allowed_binary("malicious"));
     }

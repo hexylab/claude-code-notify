@@ -271,7 +271,6 @@ fn get_install_urls() -> Result<serde_json::Value, String> {
         "uninstall_sh_url": format!("http://{}:{}/uninstall.sh", host, http_port),
         "uninstall_ps1_url": format!("http://{}:{}/uninstall.ps1", host, http_port),
         "linux_command": format!("curl -fsSL http://{}:{}/install.sh | bash", host, http_port),
-        "macos_command": format!("curl -fsSL http://{}:{}/install.sh | bash", host, http_port),
         "windows_command": format!(
             "iwr -useb http://{}:{}/install.ps1 | iex",
             host, http_port
